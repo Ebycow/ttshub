@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use super::{
-    body_stream, status_error, AudioBody, BackendClient, Capabilities, EngineError, EnginePlugin, VoiceEntry,
+    body_stream, find_credit, status_error, AudioBody, BackendClient, Capabilities, EngineError, EnginePlugin, VoiceEntry,
 };
 use crate::params::Params;
 
@@ -25,6 +25,9 @@ impl AivisCloud {
 #[derive(Deserialize)]
 struct Model {
     aivm_model_uuid: String,
+    /// クレジット表記の指定（「AivisSpeech: まお」など）が書かれていることが多い
+    #[serde(default)]
+    description: String,
     speakers: Vec<Speaker>,
 }
 
@@ -112,6 +115,11 @@ impl EnginePlugin for AivisCloud {
                 continue;
             }
             let model: Model = resp.json().await?;
+            let credit = find_credit(&model.description);
+            if credit.is_none() {
+                tracing::warn!(model = %uuid, "Aivis のモデルからクレジット表記を読み取れない");
+            }
+            let terms_url = format!("https://hub.aivis-project.com/aivm-models/{}", model.aivm_model_uuid);
             for sp in model.speakers {
                 for st in sp.styles {
                     entries.push(VoiceEntry {
@@ -119,6 +127,8 @@ impl EnginePlugin for AivisCloud {
                         character: sp.name.clone(),
                         style: Some(st.name),
                         is_default: false,
+                        credit: credit.clone(),
+                        terms_url: Some(terms_url.clone()),
                     });
                 }
             }
@@ -167,7 +177,7 @@ mod tests {
             internal_id: internal_id("model-1", "speaker-1", 2),
             character: "まお".into(),
             style: Some("あまあま".into()),
-            is_default: false,
+            ..Default::default()
         }
     }
 

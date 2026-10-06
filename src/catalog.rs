@@ -63,9 +63,8 @@ impl EngineVoices {
                 Some(style) => format!("{}（{style}）", e.character),
                 None => e.character.clone(),
             };
-            let credit = config.credit_template.as_ref().map(|t| {
-                t.replace("{character}", &e.character).replace("{style}", e.style.as_deref().unwrap_or(""))
-            });
+            let credit = credit_of(config, &e);
+            let terms_url = e.terms_url.clone().or_else(|| config.terms_url.clone());
             let idx = ev.voices.len();
             let char_default = !ev.char_default.contains_key(&char_slug);
             if char_default {
@@ -82,7 +81,7 @@ impl EngineVoices {
                 style: e.style.clone(),
                 display_name,
                 credit,
-                terms_url: config.terms_url.clone(),
+                terms_url,
                 billable: config.billable,
                 entry: e,
                 char_slug,
@@ -113,6 +112,35 @@ impl EngineVoices {
     pub fn len(&self) -> usize {
         self.voices.len()
     }
+
+    /// エンジンがまだクレジットを申告していない話者に、前回の一覧で申告していたものを引き継ぐ
+    /// （AivisSpeech のように規約の取得に時間がかかるエンジンで、再起動直後に表記が消えないように）
+    pub fn carry_over_credits(&self, entries: &mut [VoiceEntry]) {
+        let prev: HashMap<(&str, &str), &VoiceEntry> =
+            self.voices.iter().map(|v| ((v.entry.internal_id.as_str(), v.entry.character.as_str()), &v.entry)).collect();
+        for e in entries.iter_mut().filter(|e| e.credit.is_none()) {
+            if let Some(p) = prev.get(&(e.internal_id.as_str(), e.character.as_str())) {
+                e.credit = p.credit.clone();
+                e.terms_url = e.terms_url.take().or_else(|| p.terms_url.clone());
+            }
+        }
+    }
+}
+
+/// クレジット表記: 設定の credits → エンジンの申告 → テンプレート
+fn credit_of(config: &EngineConfig, e: &VoiceEntry) -> Option<String> {
+    let char_slug = slug(&e.character);
+    config
+        .credits
+        .iter()
+        .find(|(name, _)| slug(name) == char_slug)
+        .map(|(_, credit)| credit.clone())
+        .or_else(|| e.credit.clone())
+        .or_else(|| {
+            config.credit_template.as_ref().map(|t| {
+                t.replace("{character}", &e.character).replace("{style}", e.style.as_deref().unwrap_or(""))
+            })
+        })
 }
 
 fn key_of(e: &VoiceEntry) -> (String, String) {
@@ -410,7 +438,7 @@ mod tests {
     }
 
     fn vv(id: &str, character: &str, style: &str) -> VoiceEntry {
-        VoiceEntry { internal_id: id.into(), character: character.into(), style: Some(style.into()), is_default: false }
+        VoiceEntry { internal_id: id.into(), character: character.into(), style: Some(style.into()), is_default: false, ..Default::default() }
     }
 
     fn catalog() -> (Catalog, Vec<String>) {
@@ -430,7 +458,7 @@ mod tests {
                 ],
             ),
         );
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
+        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d, ..Default::default() };
         cat.set(
             "ebyroid",
             EngineVoices::build(
@@ -451,6 +479,49 @@ mod tests {
         assert_eq!(v.credit.as_deref(), Some("VOICEVOX:ずんだもん"));
         assert_eq!(v.entry.internal_id, "1");
         assert_eq!(cat.lookup("ebyroid", "kiritan").unwrap().address, "ebyroid:kiritan");
+    }
+
+    #[test]
+    fn credit_prefers_config_then_engine_then_template() {
+        let config = serde_yaml::from_str::<EngineConfig>(
+            "plugin: voicevox-compatible\nbackends: [http://x]\ncredit_template: \"VOICEVOX:{character}\"\nterms_url: https://example.com/terms\ncredits:\n  ずんだもん: \"VOICEVOX:ずんだもん（設定）\"\n",
+        )
+        .unwrap();
+        let declared = |c: &str, credit: &str| VoiceEntry {
+            internal_id: c.into(),
+            character: c.into(),
+            style: Some("ノーマル".into()),
+            credit: Some(credit.into()),
+            terms_url: Some(format!("https://example.com/{c}")),
+            ..Default::default()
+        };
+        let ev = EngineVoices::build(
+            "voicevox",
+            &config,
+            vec![
+                declared("ずんだもん", "VOICEVOX:ずんだもん"),
+                declared("もち子さん", "VOICEVOX:もち子(cv 明日葉よもぎ)"),
+                vv("108", "東北きりたん", "ノーマル"),
+            ],
+        );
+        let get = |c: &str| ev.voices[ev.lookup_index(c).unwrap()].clone();
+        assert_eq!(get("ずんだもん").credit.as_deref(), Some("VOICEVOX:ずんだもん（設定）"));
+        assert_eq!(get("もち子さん").credit.as_deref(), Some("VOICEVOX:もち子(cv 明日葉よもぎ)"));
+        assert_eq!(get("もち子さん").terms_url.as_deref(), Some("https://example.com/もち子さん"));
+        assert_eq!(get("東北きりたん").credit.as_deref(), Some("VOICEVOX:東北きりたん"));
+        assert_eq!(get("東北きりたん").terms_url.as_deref(), Some("https://example.com/terms"));
+    }
+
+    #[test]
+    fn credits_carry_over_until_the_engine_declares_them_again() {
+        let config = config(None, None);
+        let mut declared = vv("88", "まお", "ノーマル");
+        declared.credit = Some("AivisSpeech: まお".into());
+        let prev = EngineVoices::build("aivis", &config, vec![declared]);
+        let mut entries = vec![vv("88", "まお", "ノーマル"), vv("89", "まお", "あまあま")];
+        prev.carry_over_credits(&mut entries);
+        assert_eq!(entries[0].credit.as_deref(), Some("AivisSpeech: まお"));
+        assert_eq!(entries[1].credit, None);
     }
 
     #[test]

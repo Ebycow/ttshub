@@ -10,9 +10,13 @@ engines:
     plugin: voicevox-compatible
     backends:
       - http://voicevox:50021
-    # 各キャラの利用規約に従ってクレジットを表記する
+    # クレジット表記と規約の URL は、各キャラの規約（/speaker_info）から読み取る。
+    # 読み取れなかったキャラにだけテンプレートと terms_url を使う
     credit_template: "VOICEVOX:{character}"
     terms_url: https://voicevox.hiroshiba.jp/term/
+    # 読み取った表記を上書きするときは、キャラ名ごとに書く
+    # credits:
+    #   ずんだもん: "VOICEVOX:ずんだもん"
     default_voice: ずんだもん/ノーマル
     # VOICEVOX は音声を一括で返すため、長文だと応答開始まで時間がかかる
     response_start_ms: 60000
@@ -25,6 +29,9 @@ engines:
   #   backends:
   #     - http://ebyroid:4090
   #   max_concurrency_per_backend: 3
+  #   # ebyroid は規約を返さないので、クレジット表記はキャラ名ごとに書く
+  #   credits:
+  #     kiritan: "VOICEROID:東北きりたん"
 
   # VOICEVOX 互換のエンジン（AivisSpeech など）は plugin を voicevox-compatible にして足す
   # aivis:

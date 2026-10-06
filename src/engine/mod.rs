@@ -41,7 +41,7 @@ impl AudioBody {
 }
 
 /// エンジンが申告する話者
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceEntry {
     /// エンジン内部の ID（VOICEVOX なら style id）
     pub internal_id: String,
@@ -50,6 +50,12 @@ pub struct VoiceEntry {
     /// エンジンが申告するデフォルト話者か
     #[serde(default)]
     pub is_default: bool,
+    /// エンジンが申告するクレジット表記（規約の文面から読み取ったもの）
+    #[serde(default)]
+    pub credit: Option<String>,
+    /// その話者の利用規約の URL
+    #[serde(default)]
+    pub terms_url: Option<String>,
 }
 
 /// プラグインが自分で処理できるパラメータ。できないものは共通変換で処理するか無視する
@@ -124,7 +130,7 @@ pub trait EnginePlugin: Send + Sync {
 pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
     match config.plugin.as_str() {
         "ebyroid" => Ok(Arc::new(ebyroid::Ebyroid::new(config.voices.clone()))),
-        "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox)),
+        "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox::default())),
         "aivis-cloud" => {
             if config.models.is_empty() {
                 return Err("aivis-cloud には models（使うモデルの UUID）が必要".into());
@@ -135,8 +141,60 @@ pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
     }
 }
 
+/// 規約や説明の文面から、「VOICEVOX:ずんだもん」「AivisSpeech: まお」のような鉤括弧付きのクレジット表記を探す
+pub(crate) fn find_credit(text: &str) -> Option<String> {
+    text.split('「').skip(1).filter_map(|s| s.split_once('」')).map(|(inner, _)| inner.trim()).find(|inner| {
+        // 区切りの前が英数字で始まるブランド名（「※非公式です」などの鉤括弧は除く）
+        inner.split_once([':', '：']).is_some_and(|(brand, name)| {
+            let brand = brand.trim();
+            brand.starts_with(|c: char| c.is_ascii_alphanumeric())
+                && !brand.contains(char::is_whitespace)
+                && !name.trim().is_empty()
+                && !inner.contains('\n')
+        })
+    })
+    .map(str::to_owned)
+}
+
+/// 文面の最後の URL（規約の文面は「詳細は以下をご確認ください」の後に URL を置くことが多い）
+pub(crate) fn find_last_url(text: &str) -> Option<String> {
+    let start = text.rfind("https://").or_else(|| text.rfind("http://"))?;
+    let url: String = text[start..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !matches!(c, ')' | '>' | '」' | '）' | '"'))
+        .collect();
+    Some(url)
+}
+
 /// HTTP レスポンスの本体をストリームにする
 pub(crate) fn body_stream(resp: reqwest::Response) -> ByteStream {
     use futures::TryStreamExt;
     Box::pin(resp.bytes_stream().map_err(|e| std::io::Error::other(e.without_url())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_credit_in_voicevox_policy() {
+        let policy = "ずんだもんの音声ライブラリを用いて生成した音声は、\n「VOICEVOX:ずんだもん」とそれぞれクレジットを記載すれば、商用・非商用で利用可能です。\n\n利用規約の詳細は以下をご確認ください。  \nhttps://zunko.jp/con_ongen_kiyaku.html\n";
+        assert_eq!(find_credit(policy).as_deref(), Some("VOICEVOX:ずんだもん"));
+        assert_eq!(find_last_url(policy).as_deref(), Some("https://zunko.jp/con_ongen_kiyaku.html"));
+    }
+
+    #[test]
+    fn keeps_cv_and_fullwidth_parts_of_credit() {
+        let policy = "「VOICEVOX:もち子(cv 明日葉よもぎ)」とクレジットを記載すれば…「[もちぞら模型店](https://vtubermochio.wixsite.com/mochizora/contact)」に対し…\nhttps://vtubermochio.wixsite.com/mochizora/利用規約";
+        assert_eq!(find_credit(policy).as_deref(), Some("VOICEVOX:もち子(cv 明日葉よもぎ)"));
+        assert_eq!(find_last_url(policy).as_deref(), Some("https://vtubermochio.wixsite.com/mochizora/利用規約"));
+        assert_eq!(find_credit("「VOICEVOX:里石ユカ（つぼみ）」と").as_deref(), Some("VOICEVOX:里石ユカ（つぼみ）"));
+    }
+
+    #[test]
+    fn finds_credit_in_aivis_description_and_skips_other_brackets() {
+        let desc = "「※非公式です」と明記…いたずらっ子な小悪魔ボイス。\nクレジットして頂ける際は「AivisSpeech: まお」をご利用ください。";
+        assert_eq!(find_credit(desc).as_deref(), Some("AivisSpeech: まお"));
+        assert_eq!(find_credit("クレジット表記は任意です。"), None);
+    }
 }

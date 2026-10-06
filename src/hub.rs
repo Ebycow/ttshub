@@ -305,7 +305,10 @@ impl Hub {
 
     pub async fn refresh_catalog(&self, name: &str) -> Result<usize, String> {
         let engine = self.engines.get(name).ok_or("知らないエンジン")?;
-        let entries = engine.list_voices().await.map_err(|e| e.to_string())?;
+        let mut entries = engine.list_voices().await.map_err(|e| e.to_string())?;
+        if let Some(prev) = self.catalog.engine(name) {
+            prev.carry_over_credits(&mut entries);
+        }
         let ev = EngineVoices::build(name, &engine.config, entries.clone());
         let n = ev.len();
         self.catalog.set(name, ev);
@@ -362,9 +365,9 @@ mod tests {
             internal_id: id.into(),
             character: c.into(),
             style: Some(s.into()),
-            is_default: false,
+            ..Default::default()
         };
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
+        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d, ..Default::default() };
         for (name, entries) in [
             ("ebyroid", vec![eby("kiritan", true), eby("aoi", false)]),
             ("voicevox", vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル"), vv("108", "東北きりたん", "ノーマル")]),
@@ -434,8 +437,8 @@ presets:
                 "cloud",
                 &h.engines["cloud"].config,
                 vec![
-                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false },
-                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false },
+                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false, ..Default::default() },
+                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false, ..Default::default() },
                 ],
             ),
         );

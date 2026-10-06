@@ -52,9 +52,13 @@ pub struct EngineConfig {
     /// 課金のあるエンジン。フォールバック先にしない
     #[serde(default)]
     pub billable: bool,
-    /// クレジット表記のテンプレート。{character} と {style} を置き換える
+    /// キャラ名 → クレジット表記。エンジンが申告する表記より優先する（申告のないエンジンや、申告が誤っているときに書く）
+    #[serde(default)]
+    pub credits: IndexMap<String, String>,
+    /// クレジット表記のテンプレート。{character} と {style} を置き換える。設定にもエンジンの申告にもないときに使う
     #[serde(default)]
     pub credit_template: Option<String>,
+    /// 利用規約の URL。エンジンが話者ごとの URL を申告しないときに使う
     #[serde(default)]
     pub terms_url: Option<String>,
     /// このエンジンのデフォルト話者（`キャラ[/スタイル]`）。なければエンジンが申告したもの、それもなければ先頭

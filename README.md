@@ -87,7 +87,9 @@ default                                             利用者ごと、または�
 | `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける |
 | `engines.<名前>.balance` | `round_robin`（既定）/ `least_connections` / `primary_backup` |
 | `engines.<名前>.max_concurrency_per_backend` | バックエンドごとの同時合成数（既定 3） |
-| `engines.<名前>.credit_template` | クレジット表記。`{character}` と `{style}` を置き換える |
+| `engines.<名前>.credits` | キャラ名 → クレジット表記。エンジンが申告する表記より優先する |
+| `engines.<名前>.credit_template` | クレジット表記のテンプレート。`{character}` と `{style}` を置き換える。`credits` にもエンジンの申告にもないときに使う |
+| `engines.<名前>.terms_url` | 利用規約の URL。エンジンが話者ごとの URL を申告しないときに使う |
 | `engines.<名前>.default_voice` | そのエンジンのデフォルト話者（`キャラ[/スタイル]`） |
 | `engines.<名前>.billable` | 課金のあるエンジン。フォールバック先にしない |
 | `engines.<名前>.models` | 使う音声モデル（`aivis-cloud` ではモデルの UUID） |

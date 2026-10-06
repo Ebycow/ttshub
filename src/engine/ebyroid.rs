@@ -102,5 +102,5 @@ impl EnginePlugin for Ebyroid {
 }
 
 fn entry(name: String, is_default: bool) -> VoiceEntry {
-    VoiceEntry { internal_id: name.clone(), character: name, style: None, is_default }
+    VoiceEntry { internal_id: name.clone(), character: name, style: None, is_default, ..Default::default() }
 }
