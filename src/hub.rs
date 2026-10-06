@@ -205,10 +205,20 @@ impl Hub {
             return list;
         }
         if let Some(v) = &req.voice {
+            // 対応はキャラ単位で見る。移った先に同じスタイルがあればそれを使う
+            let same_character =
+                |a: &Voice, b: &Voice| a.engine == b.engine && address::slug(&a.character) == address::slug(&b.character);
             for group in &self.config.equivalents {
-                let resolved: Vec<Option<Voice>> = group.iter().map(|a| self.voice_of(a, client)).collect();
-                if resolved.iter().flatten().any(|g| g.address == v.address) {
-                    list.extend(resolved.into_iter().flatten());
+                let resolved: Vec<Voice> = group.iter().filter_map(|a| self.voice_of(a, client)).collect();
+                if !resolved.iter().any(|g| same_character(g, v)) {
+                    continue;
+                }
+                for g in resolved.into_iter().filter(|g| !same_character(g, v)) {
+                    let same_style = v
+                        .style
+                        .as_ref()
+                        .and_then(|st| self.catalog.lookup(&g.engine, &format!("{}/{st}", g.character)));
+                    list.push(same_style.unwrap_or(g));
                 }
             }
         }
@@ -410,6 +420,29 @@ presets:
             vec!["voicevox:東北きりたん/ノーマル", "ebyroid:kiritan", "voicevox:ずんだもん/ノーマル"]
         );
         assert_eq!(addresses(&h.candidates(&req, None, false)), vec!["voicevox:東北きりたん/ノーマル"]);
+    }
+
+    #[test]
+    fn equivalents_match_by_character_and_keep_the_style() {
+        let h = hub(&YAML.replace(
+            "  - [ebyroid:kiritan, voicevox:東北きりたん]",
+            "  - [ebyroid:kiritan, voicevox:東北きりたん]\n  - [cloud:alloy, voicevox:四国めたん]",
+        ));
+        h.catalog.set(
+            "cloud",
+            EngineVoices::build(
+                "cloud",
+                &h.engines["cloud"].config,
+                vec![
+                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false },
+                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false },
+                ],
+            ),
+        );
+        // 設定ではスタイルを省略していても、別のスタイルを要求したときに対応が効き、同じスタイルへ移る
+        let req = h.expand("cloud:alloy/ノーマル", None).unwrap();
+        let list = h.candidates(&req, None, true);
+        assert_eq!(addresses(&list)[..2], ["cloud:alloy/ノーマル", "voicevox:四国めたん/ノーマル"]);
     }
 
     #[test]

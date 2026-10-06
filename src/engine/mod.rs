@@ -1,5 +1,6 @@
 //! エンジンプラグイン
 
+mod aivis_cloud;
 mod ebyroid;
 mod voicevox;
 
@@ -89,6 +90,8 @@ pub(crate) fn status_error(status: reqwest::StatusCode, what: &str) -> EngineErr
 pub struct BackendClient {
     pub base: String,
     pub http: reqwest::Client,
+    /// クラウド TTS の API キー
+    pub api_key: Option<String>,
 }
 
 impl BackendClient {
@@ -122,6 +125,12 @@ pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
     match config.plugin.as_str() {
         "ebyroid" => Ok(Arc::new(ebyroid::Ebyroid::new(config.voices.clone()))),
         "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox)),
+        "aivis-cloud" => {
+            if config.models.is_empty() {
+                return Err("aivis-cloud には models（使うモデルの UUID）が必要".into());
+            }
+            Ok(Arc::new(aivis_cloud::AivisCloud::new(config.models.clone())))
+        }
         other => Err(format!("知らないプラグイン {other}")),
     }
 }

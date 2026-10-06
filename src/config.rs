@@ -63,6 +63,12 @@ pub struct EngineConfig {
     /// エンジンが話者一覧を返せないときに使う一覧（古い ebyroid など）
     #[serde(default)]
     pub voices: Vec<String>,
+    /// 使う音声モデル（Aivis Cloud API のモデル UUID など、モデルを選んで使うエンジン用）
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// API キーを入れた環境変数（クラウド TTS 用）
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     /// 応答開始までの上限をこのエンジンだけ変える。一括で返すエンジン（VOICEVOX）は長文だと時間がかかる
     #[serde(default)]
     pub response_start_ms: Option<u64>,

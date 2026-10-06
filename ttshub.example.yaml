@@ -31,6 +31,16 @@ engines:
   #   plugin: voicevox-compatible
   #   backends: [http://aivisspeech:10101]
 
+  # Aivis Cloud API（従量課金）。API キーは .env に AIVIS_API_KEY=... と書く
+  # 課金のあるエンジンなので、ほかのエンジンが止まっても代わりの声には使われない
+  # aivis-cloud:
+  #   plugin: aivis-cloud
+  #   backends: [https://api.aivis-project.com]
+  #   api_key_env: AIVIS_API_KEY
+  #   billable: true
+  #   models:
+  #     - a59cb814-0083-4369-8542-f51a29e72af7   # まお（AivisHub のモデル UUID）
+
 # 同じキャラの別エンジンでの対応。エンジンが止まったときのフォールバック先になる
 # equivalents:
 #   - [ebyroid:kiritan, voicevox:東北きりたん]

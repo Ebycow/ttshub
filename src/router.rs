@@ -67,13 +67,23 @@ pub struct Engine {
 impl Engine {
     pub fn new(name: &str, config: EngineConfig, http: reqwest::Client) -> Result<Self, String> {
         let plugin = engine::create(&config)?;
+        let api_key = match &config.api_key_env {
+            Some(env) => match std::env::var(env) {
+                Ok(k) if !k.is_empty() => Some(k),
+                _ => {
+                    tracing::warn!(engine = name, env, "API キーの環境変数がないため、認証なしで接続する");
+                    None
+                }
+            },
+            None => None,
+        };
         let backends = config
             .backends
             .iter()
             .map(|url| {
                 Arc::new(Backend {
                     url: url.clone(),
-                    client: BackendClient { base: url.clone(), http: http.clone() },
+                    client: BackendClient { base: url.clone(), http: http.clone(), api_key: api_key.clone() },
                     // 最初のヘルスチェックまでは使える前提で扱う
                     healthy: AtomicBool::new(true),
                     fails: AtomicU32::new(0),

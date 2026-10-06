@@ -13,6 +13,7 @@
 |---|---|
 | `voicevox-compatible` | VOICEVOX、AivisSpeech などの VOICEVOX 互換エンジン |
 | `ebyroid` | [ebyroid](https://github.com/Ebycow/ebyroid)（VOICEROID+ / VOICEROID2） |
+| `aivis-cloud` | [Aivis Cloud API](https://api.aivis-project.com/v1/docs)（従量課金。使うモデルを `models` に UUID で並べる） |
 
 VOICEVOX 互換のエンジンは、コードを変えずに設定ファイルに書き足すだけで使える。
 
@@ -50,7 +51,7 @@ default                                             利用者ごと、または�
 
 - スタイルを省略すると、そのキャラの先頭のスタイルになる
 - キャラ名とスタイル名は、全角・半角と英字の大小を区別しない。`/` などの記号は `-` に置き換わるか削除される（`小夜/SAYO` → `小夜-sayo`）
-- パラメータ: `speed`（0.5〜2.0）、`pitch`（-0.15〜0.15）、`volume`（0.0〜2.0）、`intonation`（0.0〜2.0）。エンジン固有のものは `x-<プラグイン>-<キー>` の形で渡す（例: `x-voicevox-prePhonemeLength=0.2`）
+- パラメータ（エンジンが対応しているものだけ効く）: `speed`（0.5〜2.0）、`pitch`（-0.15〜0.15）、`volume`（0.0〜2.0）、`intonation`（0.0〜2.0）。エンジン固有のものは `x-<プラグイン>-<キー>` の形で渡す（例: `x-voicevox-prePhonemeLength=0.2`）
 
 ## API
 
@@ -89,8 +90,10 @@ default                                             利用者ごと、または�
 | `engines.<名前>.credit_template` | クレジット表記。`{character}` と `{style}` を置き換える |
 | `engines.<名前>.default_voice` | そのエンジンのデフォルト話者（`キャラ[/スタイル]`） |
 | `engines.<名前>.billable` | 課金のあるエンジン。フォールバック先にしない |
+| `engines.<名前>.models` | 使う音声モデル（`aivis-cloud` ではモデルの UUID） |
+| `engines.<名前>.api_key_env` | API キーを入れた環境変数名（クラウドのエンジン用） |
 | `engines.<名前>.response_start_ms` | 応答開始までの上限（既定 15000）。音声を一括で返すエンジンは長めにする |
-| `equivalents` | 同じキャラの別エンジンでの対応。エンジンが止まったときの代わりの声になる |
+| `equivalents` | 同じキャラの別エンジンでの対応。エンジンが止まったときの代わりの声になる（同じスタイルがあればそれを使う） |
 | `aliases` | 別名 → アドレス |
 | `presets` | プリセット名 → パラメータ付きのアドレス |
 | `clients` | 利用者ごとの鍵（`key_env` に鍵を入れた環境変数名）。書くとすべての API に `Authorization: Bearer <鍵>` が必要になる |
