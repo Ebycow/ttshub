@@ -1,6 +1,6 @@
 //! 合成の取りまとめ: アドレスの解決、フォールバック、カタログの更新
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use crate::address::{self, Target};
 use crate::catalog::{Catalog, EngineVoices, Named, Resolution, Voice};
 use crate::config::Config;
-use crate::engine::{AudioBody, Credit, VoiceEntry};
+use crate::engine::{AudioBody, Credit, EngineError, VoiceEntry};
 use crate::params::{self, Params};
 use crate::router::Engine;
 
@@ -252,7 +252,8 @@ impl Hub {
     }
 
     /// 合成する。`deadline` があれば、その時刻までに音声を返し始めるか、あきらめてエラーにする（DESIGN §6.2）。
-    /// 最初の候補は、代わりの声を試す時間（`fallback_reserve_ms`）を残して打ち切る。代わりの声は残りをすべて使える
+    /// 最初の候補は、代わりの声を試す時間（`fallback_reserve_ms`）を残して打ち切る。代わりの声は残りをすべて使える。
+    /// 時間切れや接続できないなどで失敗したエンジンの声は、残りの候補からも外す（同じエンジンは計算中か止まっているため）
     pub async fn synthesize(
         &self,
         text: &str,
@@ -276,8 +277,15 @@ impl Hub {
         // 期限が短くても要求された声を試せるよう、残しておく時間は期限までの半分までにする
         let reserve = Duration::from_millis(self.config.timeouts.fallback_reserve_ms)
             .min(deadline.map_or(Duration::MAX, |d| d.saturating_duration_since(Instant::now()) / 2));
+        // 時間切れや接続できないなどで失敗したエンジン。声が見つからないときの代わり（エンジンのデフォルト）とは違い、
+        // 同じエンジンの別の声を試しても間に合わないので飛ばす
+        let mut down: HashSet<&str> = HashSet::new();
         for (i, v) in cands.iter().enumerate() {
-            let has_fallback = i == 0 && cands.len() > 1;
+            if down.contains(v.engine.as_str()) {
+                continue;
+            }
+            // 残しておく時間は、別のエンジンの候補があるときだけ取る（同じエンジンの候補は失敗したら飛ばすため）
+            let has_fallback = i == 0 && cands[1..].iter().any(|c| c.engine != v.engine);
             let until = deadline.map(|d| if has_fallback { d.checked_sub(reserve).unwrap_or(d) } else { d });
             if until.is_some_and(|u| u <= Instant::now()) {
                 if deadline.is_some_and(|d| d <= Instant::now()) {
@@ -301,6 +309,9 @@ impl Hub {
                     return Ok(SpeechOutcome { body, voice: v.clone(), reason, warnings, gain, backend });
                 }
                 Err(e) => {
+                    if matches!(e, EngineError::Unavailable(_)) {
+                        down.insert(v.engine.as_str());
+                    }
                     tracing::warn!(voice = %v.address, error = %e, "合成に失敗。次の候補を試す");
                     last = format!("{}: {e}", v.address);
                 }
@@ -529,6 +540,23 @@ presets:
         assert!(took >= Duration::from_millis(350) && took < Duration::from_millis(700), "{took:?}");
         // 期限のせいで打ち切っただけなので、バックエンドの失敗にしない
         assert!(h.engines["voicevox"].status()[0].last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn slow_engine_skips_its_own_default_and_falls_back_to_another_engine() {
+        let yaml = format!("{YAML}timeouts: {{ fallback_reserve_ms: 300 }}\n");
+        // 四国めたん（voicevox）が間に合わないとき、同じ voicevox のデフォルト（ずんだもん）に残りの時間を使わず、
+        // 別のエンジンの ebyroid:kiritan で読む
+        let h = slow_hub(&yaml, &[("2", Some(5000)), ("3", Some(10)), ("kiritan", Some(10))]);
+        let out = h.synthesize("あ", "voicevox:四国めたん", true, None, after_ms(700)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "ebyroid:kiritan");
+    }
+
+    #[tokio::test]
+    async fn unknown_voice_still_falls_back_to_the_engine_default() {
+        let h = slow_hub(YAML, &[("3", Some(10)), ("kiritan", Some(10))]);
+        let out = h.synthesize("あ", "voicevox:だれか", true, None, after_ms(700)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "voicevox:ずんだもん/ノーマル");
     }
 
     #[tokio::test]
