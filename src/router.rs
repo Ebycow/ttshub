@@ -155,8 +155,8 @@ impl Engine {
             match timeout(self.response_timeout(t), self.plugin.synthesize(&b.client, voice, text, params)).await {
                 Ok(Ok(body)) => {
                     b.mark_ok();
-                    // 同時合成数の枠は、音声を最後まで流し終えるまで持ち続ける
-                    let body = body.map_stream(|s| hold(s, (permit, active)));
+                    // 同時合成数の枠は、エンジンから音声を受け取り終えるまで持つ（利用者が読み終えるまでは持たない）
+                    let body = body.map_stream(|s| release_when_received(s, (permit, active)));
                     return Ok((body, b.url.clone(), i > 0));
                 }
                 Ok(Err(EngineError::Rejected(m))) => {
@@ -251,10 +251,79 @@ impl Drop for ActiveGuard {
     }
 }
 
-/// ストリームが破棄されるまで guard を持ち続ける
-fn hold<G: Send + 'static>(s: ByteStream, guard: G) -> ByteStream {
-    Box::pin(s.map(move |item| {
-        let _held = &guard;
-        item
-    }))
+/// エンジンからの受信を利用者への送信と切り離し、エンジンが送り終えたら guard を手放す。
+/// 利用者は音声をゆっくり読むことがある（hanako は再生の速さで読む）。それに合わせて枠を持ち続けると、
+/// 計算を終えたエンジンの枠がふさがり、ほかの利用者が待たされる。
+/// 受け取った音声は利用者が読むまでメモリに溜める（本文の長さは max_text_chars で抑えている）。
+/// 利用者が切断したら受信をやめ、エンジンへの接続も切る
+fn release_when_received<G: Send + 'static>(mut s: ByteStream, guard: G) -> ByteStream {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let _held = guard;
+        loop {
+            tokio::select! {
+                item = s.next() => {
+                    let Some(item) = item else { break };
+                    let failed = item.is_err();
+                    if tx.send(item).is_err() || failed {
+                        break;
+                    }
+                }
+                _ = tx.closed() => break,
+            }
+        }
+    });
+    Box::pin(futures::stream::poll_fn(move |cx| rx.poll_recv(cx)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    /// 破棄されたら印を付ける
+    struct Flag(Arc<AtomicBool>);
+
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    #[tokio::test]
+    async fn releases_guard_when_engine_finishes_even_if_nobody_reads() {
+        let released = Arc::new(AtomicBool::new(false));
+        let chunks = vec![Ok(Bytes::from_static(b"ab")), Ok(Bytes::from_static(b"cd"))];
+        let out = release_when_received(Box::pin(futures::stream::iter(chunks)), Flag(released.clone()));
+        settle().await;
+        assert!(released.load(Ordering::Relaxed), "読まれる前に枠を手放す");
+
+        let got: Vec<Bytes> = out.map(|r| r.unwrap()).collect().await;
+        assert_eq!(got, vec![Bytes::from_static(b"ab"), Bytes::from_static(b"cd")]);
+    }
+
+    #[tokio::test]
+    async fn stops_receiving_when_client_disconnects() {
+        let released = Arc::new(AtomicBool::new(false));
+        let out = release_when_received(Box::pin(futures::stream::pending()), Flag(released.clone()));
+        settle().await;
+        assert!(!released.load(Ordering::Relaxed), "エンジンが送っている間は枠を持つ");
+        drop(out);
+        settle().await;
+        assert!(released.load(Ordering::Relaxed), "利用者が切断したら受信をやめて枠を手放す");
+    }
+
+    #[tokio::test]
+    async fn passes_engine_error_and_stops() {
+        let released = Arc::new(AtomicBool::new(false));
+        let chunks = vec![Ok(Bytes::from_static(b"ab")), Err(std::io::Error::other("切れた"))];
+        let out = release_when_received(Box::pin(futures::stream::iter(chunks)), Flag(released.clone()));
+        let got: Vec<bool> = out.map(|r| r.is_ok()).collect().await;
+        assert_eq!(got, vec![true, false]);
+        assert!(released.load(Ordering::Relaxed));
+    }
 }
