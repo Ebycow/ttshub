@@ -29,9 +29,10 @@ engines:
   #   backends:
   #     - http://ebyroid:4090
   #   max_concurrency_per_backend: 3
-  #   # ebyroid は規約を返さないので、クレジット表記はキャラ名ごとに書く
+  #   # ebyroid は規約を返さないので、クレジット表記はキャラ名ごとに、規約の URL はエンジンに書く
   #   credits:
-  #     kiritan: "VOICEROID:東北きりたん"
+  #     kiritan: "VOICEROID+ 東北きりたん EX"
+  #   terms_url: https://www.ah-soft.com/commercial/voiceroid/private/
 
   # VOICEVOX 互換のエンジン（AivisSpeech など）は plugin を voicevox-compatible にして足す
   # aivis:
