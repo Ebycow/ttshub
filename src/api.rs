@@ -319,12 +319,15 @@ fn hit_json(hub: &Hub, hit: SearchHit) -> Value {
         SearchHit::Voice(v) => {
             let available = hub.engines.get(&v.engine).is_some_and(|e| e.is_available());
             let mut j = serde_json::to_value(&v).unwrap();
+            j["kind"] = json!("voice");
             j["available"] = json!(available);
             j
         }
         SearchHit::Named { name, target } => {
             let kind = if name.starts_with("preset:") { "preset" } else { "alias" };
-            json!({ "address": name, "engine": kind, "display_name": name, "target": target })
+            // engine は指す先の話者のエンジン（指す先が見つからなければ null）
+            let engine = hub.describe(&target).map(|v| v.engine);
+            json!({ "address": name, "kind": kind, "engine": engine, "display_name": name, "target": target })
         }
     }
 }
