@@ -1,0 +1,62 @@
+# ttshub と、一緒に動かす TTS エンジン
+#
+#   docker compose up -d                                     # ttshub だけ（エンジンは別に動いている）
+#   docker compose --profile voicevox up -d                  # ttshub + VOICEVOX
+#   docker compose --profile ebyroid up -d                   # ttshub + ebyroid（VOICEROID の用意が必要）
+#
+# 設定は ttshub.yaml（ttshub.example.yaml をコピーして作る）
+services:
+  ttshub:
+    build: .
+    image: ttshub
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    ports:
+      - "${TTSHUB_HOST_PORT:-8790}:8790"
+    environment:
+      TTSHUB_CONFIG: /etc/ttshub/ttshub.yaml
+      RUST_LOG: ${RUST_LOG:-info}
+    # 利用者の鍵（ttshub.yaml の clients の key_env）などは .env に書く
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${TTSHUB_CONFIG_FILE:-./ttshub.yaml}:/etc/ttshub/ttshub.yaml:ro
+      - state:/var/lib/ttshub
+    # Linux でも host.docker.internal でホストのエンジンに届くようにする
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD", "ttshub", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+
+  # VOICEVOX 公式エンジン（CPU 版）。ttshub.yaml では http://voicevox:50021 を指す
+  # NVIDIA GPU があれば image を voicevox/voicevox_engine:nvidia-latest にして GPU を割り当てる
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest
+    profiles: [voicevox]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ebyroid（wine 上の VOICEROID+）。ttshub.yaml では http://ebyroid:4090 を指す
+  # 準備の手順は ../ebyroid/README.md の「Docker (Linux / wine)」
+  ebyroid:
+    profiles: [ebyroid]
+    extends:
+      file: ../ebyroid/compose.yaml
+      service: ebyroid
+
+volumes:
+  state:

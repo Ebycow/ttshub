@@ -1,0 +1,56 @@
+# ttshub の設定例。ttshub.yaml にコピーして使う
+# 項目の意味は README.md の「設定」を参照
+
+# 全体のデフォルト話者
+default_voice: voicevox:ずんだもん
+
+engines:
+  # compose の voicevox プロファイルで動かす VOICEVOX
+  voicevox:
+    plugin: voicevox-compatible
+    backends:
+      - http://voicevox:50021
+    # 各キャラの利用規約に従ってクレジットを表記する
+    credit_template: "VOICEVOX:{character}"
+    terms_url: https://voicevox.hiroshiba.jp/term/
+    default_voice: ずんだもん/ノーマル
+    # VOICEVOX は音声を一括で返すため、長文だと応答開始まで時間がかかる
+    response_start_ms: 60000
+
+  # compose の ebyroid プロファイルで動かす ebyroid
+  # ebyroid:
+  #   plugin: ebyroid
+  #   # primary_backup: 先頭を優先し、落ちたら次へ / round_robin / least_connections
+  #   balance: primary_backup
+  #   backends:
+  #     - http://ebyroid:4090
+  #   max_concurrency_per_backend: 3
+
+  # VOICEVOX 互換のエンジン（AivisSpeech など）は plugin を voicevox-compatible にして足す
+  # aivis:
+  #   plugin: voicevox-compatible
+  #   backends: [http://aivisspeech:10101]
+
+# 同じキャラの別エンジンでの対応。エンジンが止まったときのフォールバック先になる
+# equivalents:
+#   - [ebyroid:kiritan, voicevox:東北きりたん]
+
+# 別名 → アドレス
+aliases:
+  zundamon: voicevox:ずんだもん
+
+# プリセット（パラメータ付きの別名）。preset:<名前> で指定する
+presets:
+  早口ずんだもん: "voicevox:ずんだもん?speed=1.4"
+
+# 利用者ごとの鍵。1 つでも書くと、すべての API に Authorization: Bearer <鍵> が必要になる
+# 鍵そのものは .env に書く（例: TTSHUB_KEY_HANAKO=...）
+# clients:
+#   hanako:
+#     key_env: TTSHUB_KEY_HANAKO
+#   sillytavern:
+#     key_env: TTSHUB_KEY_SILLYTAVERN
+#     default_voice: voicevox:四国めたん
+
+# 管理 API（/admin/*）の鍵を入れた環境変数。なければ鍵なしで使える
+# admin_key_env: TTSHUB_ADMIN_KEY

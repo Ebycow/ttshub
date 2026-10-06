@@ -1,0 +1,9 @@
+# ビルド成果物
+/target
+
+# ホストごとの設定と秘密（ttshub.example.yaml から作る）
+/ttshub.yaml
+.env
+
+# 言語選定のベンチマーク（まだコミットしない）
+/bench
