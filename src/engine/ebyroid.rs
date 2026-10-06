@@ -11,16 +11,7 @@ use super::{
 };
 use crate::params::Params;
 
-pub struct Ebyroid {
-    /// /api/v1/voices がない古い ebyroid のときに使う話者一覧（先頭がデフォルト）
-    static_voices: Vec<String>,
-}
-
-impl Ebyroid {
-    pub fn new(static_voices: Vec<String>) -> Self {
-        Self { static_voices }
-    }
-}
+pub struct Ebyroid;
 
 #[derive(Deserialize)]
 struct VoiceList {
@@ -46,19 +37,15 @@ impl EnginePlugin for Ebyroid {
 
     async fn list_voices(&self, backend: &BackendClient) -> Result<Vec<VoiceEntry>, EngineError> {
         let resp = backend.http.get(backend.url("/api/v1/voices")).send().await?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND && !self.static_voices.is_empty() {
-            return Ok(self
-                .static_voices
-                .iter()
-                .enumerate()
-                .map(|(i, name)| entry(name.clone(), i == 0))
-                .collect());
-        }
         if !resp.status().is_success() {
             return Err(status_error(resp.status(), "voices"));
         }
         let list: VoiceList = resp.json().await?;
-        Ok(list.voices.into_iter().map(|v| entry(v.name, v.default)).collect())
+        Ok(list
+            .voices
+            .into_iter()
+            .map(|v| VoiceEntry { internal_id: v.name.clone(), character: v.name, style: None, is_default: v.default })
+            .collect())
     }
 
     async fn synthesize(
@@ -99,8 +86,4 @@ impl EnginePlugin for Ebyroid {
     async fn health(&self, backend: &BackendClient) -> bool {
         matches!(backend.http.get(backend.url("/api/v1/health")).send().await, Ok(r) if r.status().is_success())
     }
-}
-
-fn entry(name: String, is_default: bool) -> VoiceEntry {
-    VoiceEntry { internal_id: name.clone(), character: name, style: None, is_default, ..Default::default() }
 }

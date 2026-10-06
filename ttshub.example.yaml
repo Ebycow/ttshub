@@ -11,8 +11,7 @@ engines:
     backends:
       - http://voicevox:50021
     # クレジット表記と規約の URL は、各キャラの規約（/speaker_info）から読み取る。
-    # 読み取れなかったキャラにだけテンプレートと terms_url を使う
-    credit_template: "VOICEVOX:{character}"
+    # terms_url は規約の URL が読み取れなかったキャラに使う
     terms_url: https://voicevox.hiroshiba.jp/term/
     # 読み取った表記を上書きするときは、キャラ名ごとに書く
     # credits:

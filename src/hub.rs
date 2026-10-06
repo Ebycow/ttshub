@@ -2,14 +2,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
 use crate::address::{self, Target};
 use crate::catalog::{Catalog, EngineVoices, Named, Resolution, Voice};
 use crate::config::Config;
-use crate::engine::{AudioBody, VoiceEntry};
+use crate::engine::{AudioBody, Credit, VoiceEntry};
 use crate::params::{self, Params};
 use crate::router::Engine;
 
@@ -78,6 +78,8 @@ pub struct Hub {
     pub order: Vec<String>,
     clients: HashMap<String, ClientCtx>,
     admin_key: Option<String>,
+    /// エンジン → キャラ（slug）→ エンジンが申告したクレジット。調べ終えたキャラだけを持つ
+    credits: RwLock<HashMap<String, HashMap<String, Credit>>>,
 }
 
 impl Hub {
@@ -111,7 +113,15 @@ impl Hub {
         }
         let admin_key = config.admin_key_env.as_ref().and_then(|k| std::env::var(k).ok()).filter(|k| !k.is_empty());
         let order = config.engines.keys().cloned().collect();
-        Ok(Self { config, engines, catalog: Catalog::default(), order, clients, admin_key })
+        Ok(Self {
+            config,
+            engines,
+            catalog: Catalog::default(),
+            order,
+            clients,
+            admin_key,
+            credits: RwLock::default(),
+        })
     }
 
     /// 鍵から利用者を特定する。利用者を設定していなければ誰でも使える（Ok(None)）
@@ -290,11 +300,11 @@ impl Hub {
 
     /// 前回保存したカタログを読む（再起動直後、エンジンが応答しなくても使えるように）
     pub fn load_snapshots(&self) {
-        for (name, engine) in &self.engines {
+        for name in self.engines.keys() {
             let Ok(text) = std::fs::read_to_string(self.snapshot_path(name)) else { continue };
             match serde_json::from_str::<Vec<VoiceEntry>>(&text) {
                 Ok(entries) => {
-                    let ev = EngineVoices::build(name, &engine.config, entries);
+                    let ev = self.build(name, entries);
                     tracing::info!(engine = %name, voices = ev.len(), "保存済みのカタログを読み込んだ");
                     self.catalog.set(name, ev);
                 }
@@ -305,11 +315,8 @@ impl Hub {
 
     pub async fn refresh_catalog(&self, name: &str) -> Result<usize, String> {
         let engine = self.engines.get(name).ok_or("知らないエンジン")?;
-        let mut entries = engine.list_voices().await.map_err(|e| e.to_string())?;
-        if let Some(prev) = self.catalog.engine(name) {
-            prev.carry_over_credits(&mut entries);
-        }
-        let ev = EngineVoices::build(name, &engine.config, entries.clone());
+        let entries = engine.list_voices().await.map_err(|e| e.to_string())?;
+        let ev = self.build(name, entries.clone());
         let n = ev.len();
         self.catalog.set(name, ev);
         let path = self.snapshot_path(name);
@@ -327,6 +334,55 @@ impl Hub {
                 Ok(n) => tracing::info!(engine = %name, voices = n, "カタログを更新"),
                 Err(e) => tracing::warn!(engine = %name, error = %e, "カタログを更新できない。前回の一覧を使い続ける"),
             }
+        }
+    }
+
+    fn build(&self, name: &str, entries: Vec<VoiceEntry>) -> EngineVoices {
+        let credits = self.credits.read().unwrap();
+        EngineVoices::build(name, &self.engines[name].config, entries, credits.get(name).unwrap_or(&HashMap::new()))
+    }
+
+    /// まだ調べていないキャラのクレジットをエンジンに問い合わせ、カタログに反映する。
+    /// 話者一覧の取得とは別に呼ぶ（規約の取得に時間がかかるエンジンがあるため）
+    pub async fn fill_credits(&self, name: &str) {
+        let (Some(engine), Some(ev)) = (self.engines.get(name), self.catalog.engine(name)) else { return };
+        let missing: Vec<String> = {
+            let credits = self.credits.read().unwrap();
+            let known = credits.get(name);
+            ev.characters().into_iter().filter(|c| known.is_none_or(|k| !k.contains_key(&address::slug(c)))).collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        let found = match engine.credits(&missing).await {
+            Ok(found) if !found.is_empty() => found,
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(engine = %name, error = %e, "クレジットを取得できない。次の更新で取り直す");
+                return;
+            }
+        };
+        let configured = |c: &str| engine.config.credits.keys().any(|k| address::slug(k) == address::slug(c));
+        for (character, credit) in &found {
+            if credit.credit.is_none() && !configured(character) {
+                tracing::warn!(engine = %name, character = %character, "クレジット表記が分からない。必要なら設定の credits に書く");
+            }
+        }
+        self.credits
+            .write()
+            .unwrap()
+            .entry(name.to_owned())
+            .or_default()
+            .extend(found.into_iter().map(|(c, credit)| (address::slug(&c), credit)));
+        // 問い合わせの間にカタログが更新されていてもよいように、今の一覧から作り直す
+        if let Some(ev) = self.catalog.engine(name) {
+            self.catalog.set(name, self.build(name, ev.entries()));
+        }
+    }
+
+    pub async fn fill_all_credits(&self) {
+        for name in &self.order {
+            self.fill_credits(name).await;
         }
     }
 }
@@ -365,15 +421,15 @@ mod tests {
             internal_id: id.into(),
             character: c.into(),
             style: Some(s.into()),
-            ..Default::default()
+            is_default: false,
         };
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d, ..Default::default() };
+        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
         for (name, entries) in [
             ("ebyroid", vec![eby("kiritan", true), eby("aoi", false)]),
             ("voicevox", vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル"), vv("108", "東北きりたん", "ノーマル")]),
             ("cloud", vec![vv("alloy", "alloy", "default")]),
         ] {
-            hub.catalog.set(name, EngineVoices::build(name, &hub.engines[name].config, entries));
+            hub.catalog.set(name, hub.build(name, entries));
         }
         hub
     }
@@ -433,12 +489,11 @@ presets:
         ));
         h.catalog.set(
             "cloud",
-            EngineVoices::build(
+            h.build(
                 "cloud",
-                &h.engines["cloud"].config,
                 vec![
-                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false, ..Default::default() },
-                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false, ..Default::default() },
+                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false },
+                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false },
                 ],
             ),
         );

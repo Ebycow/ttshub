@@ -4,6 +4,7 @@ mod aivis_cloud;
 mod ebyroid;
 mod voicevox;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -41,7 +42,7 @@ impl AudioBody {
 }
 
 /// エンジンが申告する話者
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct VoiceEntry {
     /// エンジン内部の ID（VOICEVOX なら style id）
     pub internal_id: String,
@@ -50,11 +51,12 @@ pub struct VoiceEntry {
     /// エンジンが申告するデフォルト話者か
     #[serde(default)]
     pub is_default: bool,
-    /// エンジンが申告するクレジット表記（規約の文面から読み取ったもの）
-    #[serde(default)]
+}
+
+/// エンジンが申告するクレジット表記と利用規約の URL（キャラごと）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Credit {
     pub credit: Option<String>,
-    /// その話者の利用規約の URL
-    #[serde(default)]
     pub terms_url: Option<String>,
 }
 
@@ -125,12 +127,22 @@ pub trait EnginePlugin: Send + Sync {
     ) -> Result<AudioBody, EngineError>;
 
     async fn health(&self, backend: &BackendClient) -> bool;
+
+    /// キャラ名 → クレジット。話者一覧とは別に裏で呼ばれる（規約の取得に時間がかかるエンジンがあるため）。
+    /// 調べて分かったキャラだけを返す（表記がないと分かったキャラは空の Credit）。返さなかったキャラは次の更新で取り直す
+    async fn credits(
+        &self,
+        _backend: &BackendClient,
+        _characters: &[String],
+    ) -> Result<HashMap<String, Credit>, EngineError> {
+        Ok(HashMap::new())
+    }
 }
 
 pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
     match config.plugin.as_str() {
-        "ebyroid" => Ok(Arc::new(ebyroid::Ebyroid::new(config.voices.clone()))),
-        "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox::default())),
+        "ebyroid" => Ok(Arc::new(ebyroid::Ebyroid)),
+        "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox)),
         "aivis-cloud" => {
             if config.models.is_empty() {
                 return Err("aivis-cloud には models（使うモデルの UUID）が必要".into());

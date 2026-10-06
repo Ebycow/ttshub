@@ -1,5 +1,6 @@
 //! 論理エンジンとバックエンド
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,12 +11,14 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::config::{Balance, EngineConfig, Timeouts};
-use crate::engine::{self, AudioBody, BackendClient, ByteStream, EngineError, EnginePlugin, VoiceEntry};
+use crate::engine::{self, AudioBody, BackendClient, ByteStream, Credit, EngineError, EnginePlugin, VoiceEntry};
 use crate::params::Params;
 
 /// 連続でこの回数失敗したら切り離す
 const FAILS_TO_DOWN: u32 = 2;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+/// クレジットの問い合わせの上限（裏で行うので長くてよい。AivisSpeech は規約 1 件に数秒かかる）
+const CREDITS_TIMEOUT: Duration = Duration::from_secs(300);
 /// 同時合成数の空き待ちがこれより長かったら記録する
 const SLOW_QUEUE_WAIT: Duration = Duration::from_secs(1);
 
@@ -185,6 +188,21 @@ impl Engine {
                 Ok(Ok(v)) => return Ok(v),
                 Ok(Err(e)) => last = e,
                 Err(_) => last = EngineError::Unavailable(format!("{}: 話者一覧の取得が時間切れ", b.url)),
+            }
+        }
+        Err(last)
+    }
+
+    /// キャラ名 → クレジットを、稼働中のバックエンドから記述順に試して取得する
+    pub async fn credits(&self, characters: &[String]) -> Result<HashMap<String, Credit>, EngineError> {
+        let mut list = self.backends.clone();
+        list.sort_by_key(|b| !b.is_healthy());
+        let mut last = EngineError::Unavailable("バックエンドがない".into());
+        for b in list {
+            match timeout(CREDITS_TIMEOUT, self.plugin.credits(&b.client, characters)).await {
+                Ok(Ok(c)) => return Ok(c),
+                Ok(Err(e)) => last = e,
+                Err(_) => last = EngineError::Unavailable(format!("{}: クレジットの取得が時間切れ", b.url)),
             }
         }
         Err(last)

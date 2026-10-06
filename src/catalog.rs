@@ -9,7 +9,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::address::{compact, slug};
 use crate::config::EngineConfig;
-use crate::engine::VoiceEntry;
+use crate::engine::{Credit, VoiceEntry};
 
 /// カタログ上の 1 つの話者
 #[derive(Debug, Clone, Serialize)]
@@ -41,8 +41,14 @@ pub struct EngineVoices {
 }
 
 impl EngineVoices {
-    /// エンジンが申告した一覧から作る。正規化した名前が重複したものは両方とも除き、警告する
-    pub fn build(engine: &str, config: &EngineConfig, entries: Vec<VoiceEntry>) -> Self {
+    /// エンジンが申告した一覧から作る。正規化した名前が重複したものは両方とも除き、警告する。
+    /// credits はエンジンが申告したクレジット（キャラ名を slug にしたもの → クレジット）
+    pub fn build(
+        engine: &str,
+        config: &EngineConfig,
+        entries: Vec<VoiceEntry>,
+        credits: &HashMap<String, Credit>,
+    ) -> Self {
         let mut count: HashMap<(String, String), usize> = HashMap::new();
         for e in &entries {
             *count.entry(key_of(e)).or_default() += 1;
@@ -63,8 +69,15 @@ impl EngineVoices {
                 Some(style) => format!("{}（{style}）", e.character),
                 None => e.character.clone(),
             };
-            let credit = credit_of(config, &e);
-            let terms_url = e.terms_url.clone().or_else(|| config.terms_url.clone());
+            // 設定の credits → エンジンの申告
+            let declared = credits.get(&char_slug).cloned().unwrap_or_default();
+            let credit = config
+                .credits
+                .iter()
+                .find(|(name, _)| slug(name) == char_slug)
+                .map(|(_, c)| c.clone())
+                .or(declared.credit);
+            let terms_url = declared.terms_url.or_else(|| config.terms_url.clone());
             let idx = ev.voices.len();
             let char_default = !ev.char_default.contains_key(&char_slug);
             if char_default {
@@ -113,34 +126,16 @@ impl EngineVoices {
         self.voices.len()
     }
 
-    /// エンジンがまだクレジットを申告していない話者に、前回の一覧で申告していたものを引き継ぐ
-    /// （AivisSpeech のように規約の取得に時間がかかるエンジンで、再起動直後に表記が消えないように）
-    pub fn carry_over_credits(&self, entries: &mut [VoiceEntry]) {
-        let prev: HashMap<(&str, &str), &VoiceEntry> =
-            self.voices.iter().map(|v| ((v.entry.internal_id.as_str(), v.entry.character.as_str()), &v.entry)).collect();
-        for e in entries.iter_mut().filter(|e| e.credit.is_none()) {
-            if let Some(p) = prev.get(&(e.internal_id.as_str(), e.character.as_str())) {
-                e.credit = p.credit.clone();
-                e.terms_url = e.terms_url.take().or_else(|| p.terms_url.clone());
-            }
-        }
+    /// エンジンが申告した一覧（クレジットを反映して作り直すときに使う）
+    pub fn entries(&self) -> Vec<VoiceEntry> {
+        self.voices.iter().map(|v| v.entry.clone()).collect()
     }
-}
 
-/// クレジット表記: 設定の credits → エンジンの申告 → テンプレート
-fn credit_of(config: &EngineConfig, e: &VoiceEntry) -> Option<String> {
-    let char_slug = slug(&e.character);
-    config
-        .credits
-        .iter()
-        .find(|(name, _)| slug(name) == char_slug)
-        .map(|(_, credit)| credit.clone())
-        .or_else(|| e.credit.clone())
-        .or_else(|| {
-            config.credit_template.as_ref().map(|t| {
-                t.replace("{character}", &e.character).replace("{style}", e.style.as_deref().unwrap_or(""))
-            })
-        })
+    /// キャラ名（重複なし、並び順のまま）
+    pub fn characters(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        self.voices.iter().filter(|v| seen.insert(&v.char_slug)).map(|v| v.character.clone()).collect()
+    }
 }
 
 fn key_of(e: &VoiceEntry) -> (String, String) {
@@ -428,17 +423,25 @@ fn levenshtein(a: &str, b: &str) -> usize {
 mod tests {
     use super::*;
 
-    fn config(credit: Option<&str>, default_voice: Option<&str>) -> EngineConfig {
+    fn config(default_voice: Option<&str>) -> EngineConfig {
         serde_yaml::from_str::<EngineConfig>(&format!(
-            "plugin: voicevox-compatible\nbackends: [http://x]\n{}{}",
-            credit.map(|c| format!("credit_template: \"{c}\"\n")).unwrap_or_default(),
+            "plugin: voicevox-compatible\nbackends: [http://x]\nterms_url: https://example.com/terms\ncredits:\n  四国めたん: \"VOICEVOX:四国めたん（設定）\"\n{}",
             default_voice.map(|d| format!("default_voice: \"{d}\"\n")).unwrap_or_default(),
         ))
         .unwrap()
     }
 
+    fn declared(pairs: &[(&str, &str)]) -> HashMap<String, Credit> {
+        pairs
+            .iter()
+            .map(|(c, credit)| {
+                (slug(c), Credit { credit: Some((*credit).into()), terms_url: Some(format!("https://example.com/{c}")) })
+            })
+            .collect()
+    }
+
     fn vv(id: &str, character: &str, style: &str) -> VoiceEntry {
-        VoiceEntry { internal_id: id.into(), character: character.into(), style: Some(style.into()), is_default: false, ..Default::default() }
+        VoiceEntry { internal_id: id.into(), character: character.into(), style: Some(style.into()), is_default: false }
     }
 
     fn catalog() -> (Catalog, Vec<String>) {
@@ -447,7 +450,7 @@ mod tests {
             "voicevox",
             EngineVoices::build(
                 "voicevox",
-                &config(Some("VOICEVOX:{character}"), None),
+                &config(None),
                 vec![
                     vv("2", "四国めたん", "ノーマル"),
                     vv("3", "ずんだもん", "ノーマル"),
@@ -456,15 +459,17 @@ mod tests {
                     vv("46", "小夜/SAYO", "ノーマル"),
                     vv("108", "東北きりたん", "ノーマル"),
                 ],
+                &declared(&[("ずんだもん", "VOICEVOX:ずんだもん"), ("四国めたん", "VOICEVOX:四国めたん")]),
             ),
         );
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d, ..Default::default() };
+        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
         cat.set(
             "ebyroid",
             EngineVoices::build(
                 "ebyroid",
-                &config(None, None),
+                &config(None),
                 vec![eby("kiritan", true), eby("aoi", false), eby("akane", false)],
+                &HashMap::new(),
             ),
         );
         (cat, vec!["ebyroid".into(), "voicevox".into()])
@@ -477,51 +482,22 @@ mod tests {
         assert_eq!(v.address, "voicevox:ずんだもん/あまあま");
         assert_eq!(v.display_name, "ずんだもん（あまあま）");
         assert_eq!(v.credit.as_deref(), Some("VOICEVOX:ずんだもん"));
+        assert_eq!(v.terms_url.as_deref(), Some("https://example.com/ずんだもん"));
         assert_eq!(v.entry.internal_id, "1");
         assert_eq!(cat.lookup("ebyroid", "kiritan").unwrap().address, "ebyroid:kiritan");
     }
 
     #[test]
-    fn credit_prefers_config_then_engine_then_template() {
-        let config = serde_yaml::from_str::<EngineConfig>(
-            "plugin: voicevox-compatible\nbackends: [http://x]\ncredit_template: \"VOICEVOX:{character}\"\nterms_url: https://example.com/terms\ncredits:\n  ずんだもん: \"VOICEVOX:ずんだもん（設定）\"\n",
-        )
-        .unwrap();
-        let declared = |c: &str, credit: &str| VoiceEntry {
-            internal_id: c.into(),
-            character: c.into(),
-            style: Some("ノーマル".into()),
-            credit: Some(credit.into()),
-            terms_url: Some(format!("https://example.com/{c}")),
-            ..Default::default()
-        };
-        let ev = EngineVoices::build(
-            "voicevox",
-            &config,
-            vec![
-                declared("ずんだもん", "VOICEVOX:ずんだもん"),
-                declared("もち子さん", "VOICEVOX:もち子(cv 明日葉よもぎ)"),
-                vv("108", "東北きりたん", "ノーマル"),
-            ],
-        );
-        let get = |c: &str| ev.voices[ev.lookup_index(c).unwrap()].clone();
-        assert_eq!(get("ずんだもん").credit.as_deref(), Some("VOICEVOX:ずんだもん（設定）"));
-        assert_eq!(get("もち子さん").credit.as_deref(), Some("VOICEVOX:もち子(cv 明日葉よもぎ)"));
-        assert_eq!(get("もち子さん").terms_url.as_deref(), Some("https://example.com/もち子さん"));
-        assert_eq!(get("東北きりたん").credit.as_deref(), Some("VOICEVOX:東北きりたん"));
-        assert_eq!(get("東北きりたん").terms_url.as_deref(), Some("https://example.com/terms"));
-    }
-
-    #[test]
-    fn credits_carry_over_until_the_engine_declares_them_again() {
-        let config = config(None, None);
-        let mut declared = vv("88", "まお", "ノーマル");
-        declared.credit = Some("AivisSpeech: まお".into());
-        let prev = EngineVoices::build("aivis", &config, vec![declared]);
-        let mut entries = vec![vv("88", "まお", "ノーマル"), vv("89", "まお", "あまあま")];
-        prev.carry_over_credits(&mut entries);
-        assert_eq!(entries[0].credit.as_deref(), Some("AivisSpeech: まお"));
-        assert_eq!(entries[1].credit, None);
+    fn config_credits_win_and_missing_credits_stay_empty() {
+        let (cat, _) = catalog();
+        // 設定の表記がエンジンの申告より優先し、規約の URL はエンジンの申告を使う
+        let metan = cat.lookup("voicevox", "四国めたん").unwrap();
+        assert_eq!(metan.credit.as_deref(), Some("VOICEVOX:四国めたん（設定）"));
+        assert_eq!(metan.terms_url.as_deref(), Some("https://example.com/四国めたん"));
+        // どちらにもなければ表記は空のまま（推測で作らない）。規約は設定の URL
+        let kiritan = cat.lookup("voicevox", "東北きりたん").unwrap();
+        assert_eq!(kiritan.credit, None);
+        assert_eq!(kiritan.terms_url.as_deref(), Some("https://example.com/terms"));
     }
 
     #[test]
@@ -538,13 +514,13 @@ mod tests {
         let (cat, _) = catalog();
         assert_eq!(cat.engine_default("ebyroid").unwrap().address, "ebyroid:kiritan");
         assert_eq!(cat.engine_default("voicevox").unwrap().address, "voicevox:四国めたん/ノーマル");
-        let ev = EngineVoices::build("voicevox", &config(None, Some("ずんだもん")), vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル")]);
+        let ev = EngineVoices::build("voicevox", &config(Some("ずんだもん")), vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル")], &HashMap::new());
         assert_eq!(ev.voices[ev.default.unwrap()].address, "voicevox:ずんだもん/ノーマル");
     }
 
     #[test]
     fn duplicated_slugs_are_excluded() {
-        let ev = EngineVoices::build("v", &config(None, None), vec![vv("1", "A B", "x"), vv("2", "AB", "x"), vv("3", "C", "x")]);
+        let ev = EngineVoices::build("v", &config(None), vec![vv("1", "A B", "x"), vv("2", "AB", "x"), vv("3", "C", "x")], &HashMap::new());
         assert_eq!(ev.len(), 1);
     }
 
@@ -568,7 +544,7 @@ mod tests {
     fn ambiguous_or_unknown_queries_return_suggestions_only() {
         let (cat, order) = catalog();
         // 「もん」はずんだもんにもあんこもんにも含まれる
-        cat.set("v2", EngineVoices::build("v2", &config(None, None), vec![vv("9", "あんこもん", "ノーマル")]));
+        cat.set("v2", EngineVoices::build("v2", &config(None), vec![vv("9", "あんこもん", "ノーマル")], &HashMap::new()));
         let order2 = vec!["ebyroid".to_string(), "voicevox".to_string(), "v2".to_string()];
         let r = cat.resolve(&order2, "もん", &[]);
         assert_eq!(r.matched, None);

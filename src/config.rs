@@ -55,18 +55,12 @@ pub struct EngineConfig {
     /// キャラ名 → クレジット表記。エンジンが申告する表記より優先する（申告のないエンジンや、申告が誤っているときに書く）
     #[serde(default)]
     pub credits: IndexMap<String, String>,
-    /// クレジット表記のテンプレート。{character} と {style} を置き換える。設定にもエンジンの申告にもないときに使う
-    #[serde(default)]
-    pub credit_template: Option<String>,
-    /// 利用規約の URL。エンジンが話者ごとの URL を申告しないときに使う
+    /// 利用規約の URL。エンジンがキャラごとの URL を申告しないときに使う
     #[serde(default)]
     pub terms_url: Option<String>,
     /// このエンジンのデフォルト話者（`キャラ[/スタイル]`）。なければエンジンが申告したもの、それもなければ先頭
     #[serde(default)]
     pub default_voice: Option<String>,
-    /// エンジンが話者一覧を返せないときに使う一覧（古い ebyroid など）
-    #[serde(default)]
-    pub voices: Vec<String>,
     /// 使う音声モデル（Aivis Cloud API のモデル UUID など、モデルを選んで使うエンジン用）
     #[serde(default)]
     pub models: Vec<String>,

@@ -60,6 +60,8 @@ async fn main() {
     if tokio::time::timeout(STARTUP_WAIT, initial).await.is_err() {
         tracing::warn!("起動時のエンジン確認が時間内に終わらなかった。バックグラウンドで続ける");
     }
+    let h = hub.clone();
+    tokio::spawn(async move { h.fill_all_credits().await });
     spawn_background(hub.clone());
 
     let listener = match tokio::net::TcpListener::bind(&listen).await {
@@ -90,6 +92,8 @@ fn spawn_background(hub: Arc<Hub>) {
                 if h.catalog.engine(name).is_none() && engine.is_available() {
                     if let Ok(n) = h.refresh_catalog(name).await {
                         tracing::info!(engine = %name, voices = n, "カタログを取得");
+                        let (h, name) = (h.clone(), name.clone());
+                        tokio::spawn(async move { h.fill_credits(&name).await });
                     }
                 }
             }
@@ -102,6 +106,7 @@ fn spawn_background(hub: Arc<Hub>) {
         loop {
             tick.tick().await;
             hub.refresh_all().await;
+            hub.fill_all_credits().await;
         }
     });
 }

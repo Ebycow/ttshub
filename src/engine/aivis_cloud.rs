@@ -2,13 +2,17 @@
 //!
 //! 使うモデルを設定の models に UUID で並べる。モデルの話者とスタイルを、それぞれ 1 つの声として扱う。
 //! 合成は POST /v1/tts/synthesize。WAV で受け取り、形式の変換は共通変換に任せる
+//! クレジットはモデルの説明（「AivisSpeech: まお」など）から読み取り、規約は AivisHub のモデルのページにする
+
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use super::{
-    body_stream, find_credit, status_error, AudioBody, BackendClient, Capabilities, EngineError, EnginePlugin, VoiceEntry,
+    body_stream, find_credit, status_error, AudioBody, BackendClient, Capabilities, Credit, EngineError,
+    EnginePlugin, VoiceEntry,
 };
 use crate::params::Params;
 
@@ -20,12 +24,26 @@ impl AivisCloud {
     pub fn new(models: Vec<String>) -> Self {
         Self { models }
     }
+
+    /// 使うモデルの情報。1 つのモデルが消えていても、ほかのモデルは使えるようにする
+    async fn fetch_models(&self, backend: &BackendClient) -> Result<Vec<Model>, EngineError> {
+        let mut models = Vec::new();
+        for uuid in &self.models {
+            let req = backend.http.get(backend.url(&format!("/v1/aivm-models/{uuid}")));
+            let resp = authorized(req, backend).send().await?;
+            if !resp.status().is_success() {
+                tracing::warn!(model = %uuid, status = %resp.status(), "Aivis のモデルを取得できない");
+                continue;
+            }
+            models.push(resp.json().await?);
+        }
+        Ok(models)
+    }
 }
 
 #[derive(Deserialize)]
 struct Model {
     aivm_model_uuid: String,
-    /// クレジット表記の指定（「AivisSpeech: まお」など）が書かれていることが多い
     #[serde(default)]
     description: String,
     speakers: Vec<Speaker>,
@@ -106,20 +124,7 @@ impl EnginePlugin for AivisCloud {
 
     async fn list_voices(&self, backend: &BackendClient) -> Result<Vec<VoiceEntry>, EngineError> {
         let mut entries = Vec::new();
-        for uuid in &self.models {
-            let req = backend.http.get(backend.url(&format!("/v1/aivm-models/{uuid}")));
-            let resp = authorized(req, backend).send().await?;
-            if !resp.status().is_success() {
-                // 1 つのモデルが消えていても、ほかのモデルは使えるようにする
-                tracing::warn!(model = %uuid, status = %resp.status(), "Aivis のモデルを取得できない");
-                continue;
-            }
-            let model: Model = resp.json().await?;
-            let credit = find_credit(&model.description);
-            if credit.is_none() {
-                tracing::warn!(model = %uuid, "Aivis のモデルからクレジット表記を読み取れない");
-            }
-            let terms_url = format!("https://hub.aivis-project.com/aivm-models/{}", model.aivm_model_uuid);
+        for model in self.fetch_models(backend).await? {
             for sp in model.speakers {
                 for st in sp.styles {
                     entries.push(VoiceEntry {
@@ -127,8 +132,6 @@ impl EnginePlugin for AivisCloud {
                         character: sp.name.clone(),
                         style: Some(st.name),
                         is_default: false,
-                        credit: credit.clone(),
-                        terms_url: Some(terms_url.clone()),
                     });
                 }
             }
@@ -166,6 +169,24 @@ impl EnginePlugin for AivisCloud {
         let req = backend.http.get(backend.url("/v1/aivm-models/search")).query(&[("limit", "1")]);
         matches!(req.send().await, Ok(r) if r.status().is_success())
     }
+
+    async fn credits(
+        &self,
+        backend: &BackendClient,
+        characters: &[String],
+    ) -> Result<HashMap<String, Credit>, EngineError> {
+        let mut out = HashMap::new();
+        for model in self.fetch_models(backend).await? {
+            let credit = Credit {
+                credit: find_credit(&model.description),
+                terms_url: Some(format!("https://hub.aivis-project.com/aivm-models/{}", model.aivm_model_uuid)),
+            };
+            for sp in model.speakers.into_iter().filter(|sp| characters.contains(&sp.name)) {
+                out.insert(sp.name, credit.clone());
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -177,7 +198,7 @@ mod tests {
             internal_id: internal_id("model-1", "speaker-1", 2),
             character: "まお".into(),
             style: Some("あまあま".into()),
-            ..Default::default()
+            is_default: false,
         }
     }
 
