@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
@@ -250,12 +251,15 @@ impl Hub {
             .collect()
     }
 
+    /// 合成する。`deadline` があれば、その時刻までに音声を返し始めるか、あきらめてエラーにする（DESIGN §6.2）。
+    /// 最初の候補は、代わりの声を試す時間（`fallback_reserve_ms`）を残して打ち切る。代わりの声は残りをすべて使える
     pub async fn synthesize(
         &self,
         text: &str,
         voice: &str,
         fallback: bool,
         client: Option<&ClientCtx>,
+        deadline: Option<Instant>,
     ) -> Result<SpeechOutcome, HubError> {
         let req = self.expand(voice, client)?;
         let (params, mut warnings) = params::resolve(&req.params);
@@ -269,9 +273,22 @@ impl Hub {
         // 話者一覧をまだ一度も取れていないエンジンなら、話者が無いのではなくエンジンが止まっている
         let engine_down = req.voice.is_none() && req.engine.as_ref().is_some_and(|e| self.catalog.engine(e).is_none());
         let mut last = String::new();
+        // 期限が短くても要求された声を試せるよう、残しておく時間は期限までの半分までにする
+        let reserve = Duration::from_millis(self.config.timeouts.fallback_reserve_ms)
+            .min(deadline.map_or(Duration::MAX, |d| d.saturating_duration_since(Instant::now()) / 2));
         for (i, v) in cands.iter().enumerate() {
+            let has_fallback = i == 0 && cands.len() > 1;
+            let until = deadline.map(|d| if has_fallback { d.checked_sub(reserve).unwrap_or(d) } else { d });
+            if until.is_some_and(|u| u <= Instant::now()) {
+                if deadline.is_some_and(|d| d <= Instant::now()) {
+                    last = format!("{}: 期限までに試す時間がなかった", v.address);
+                    break;
+                }
+                // 代わりの声に回す時間しか残っていない
+                continue;
+            }
             let engine = &self.engines[&v.engine];
-            match engine.synthesize(&v.entry, text, &params, &self.config.timeouts).await {
+            match engine.synthesize(&v.entry, text, &params, &self.config.timeouts, until).await {
                 Ok((body, backend, switched)) => {
                     let reason = match (i, req.voice.is_some()) {
                         (0, true) if switched => FallbackReason::BackendUnavailable,
@@ -447,6 +464,102 @@ aliases:
 presets:
   早口ずんだもん: "zundamon?speed=1.4&pitch=0.1"
 "#;
+
+    /// 話者（internal_id）ごとに決めた時間をかけて応答を始める偽のエンジン。None なら応答を返したまま送り終えない
+    struct SlowPlugin(HashMap<&'static str, Option<Duration>>);
+
+    #[async_trait::async_trait]
+    impl crate::engine::EnginePlugin for SlowPlugin {
+        fn param_prefix(&self) -> &'static str {
+            "slow"
+        }
+        fn capabilities(&self) -> crate::engine::Capabilities {
+            Default::default()
+        }
+        async fn list_voices(&self, _: &crate::engine::BackendClient) -> Result<Vec<VoiceEntry>, crate::engine::EngineError> {
+            Ok(vec![])
+        }
+        async fn synthesize(
+            &self,
+            _: &crate::engine::BackendClient,
+            voice: &VoiceEntry,
+            _: &str,
+            _: &Params,
+        ) -> Result<AudioBody, crate::engine::EngineError> {
+            let format = crate::engine::PcmFormat { sample_rate: 48000, channels: 2 };
+            match self.0.get(voice.internal_id.as_str()).copied().flatten() {
+                Some(delay) => {
+                    tokio::time::sleep(delay).await;
+                    let chunk = futures::stream::iter([Ok(bytes::Bytes::from_static(&[0; 4]))]);
+                    Ok(AudioBody::Pcm(format, Box::pin(chunk)))
+                }
+                None => Ok(AudioBody::Pcm(format, Box::pin(futures::stream::pending()))),
+            }
+        }
+        async fn health(&self, _: &crate::engine::BackendClient) -> bool {
+            true
+        }
+    }
+
+    /// YAML のエンジンを、すべて偽のエンジンに差し替えた Hub
+    fn slow_hub(yaml: &str, delays: &[(&'static str, Option<u64>)]) -> Hub {
+        let mut h = hub(yaml);
+        let plugin: Arc<SlowPlugin> =
+            Arc::new(SlowPlugin(delays.iter().map(|(id, ms)| (*id, ms.map(Duration::from_millis))).collect()));
+        for (name, ec) in h.config.engines.clone() {
+            let e = Engine::with_plugin(&name, ec, reqwest::Client::new(), plugin.clone());
+            h.engines.insert(name, Arc::new(e));
+        }
+        h
+    }
+
+    fn after_ms(ms: u64) -> Option<Instant> {
+        Some(Instant::now() + Duration::from_millis(ms))
+    }
+
+    #[tokio::test]
+    async fn deadline_leaves_time_for_fallback() {
+        let yaml = format!("{YAML}timeouts: {{ fallback_reserve_ms: 300 }}\n");
+        // 東北きりたん（voicevox）は 5 秒かかり、代わりの ebyroid:kiritan はすぐ応答する
+        let h = slow_hub(&yaml, &[("108", Some(5000)), ("kiritan", Some(10))]);
+        let started = Instant::now();
+        let out = h.synthesize("あ", "voicevox:東北きりたん", true, None, after_ms(700)).await.ok().unwrap();
+        let took = started.elapsed();
+        assert_eq!(out.voice.address, "ebyroid:kiritan");
+        assert!(took >= Duration::from_millis(350) && took < Duration::from_millis(700), "{took:?}");
+        // 期限のせいで打ち切っただけなので、バックエンドの失敗にしない
+        assert!(h.engines["voicevox"].status()[0].last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn short_deadline_still_tries_the_requested_voice() {
+        // 期限（400ms）が残しておく時間（既定 2 秒）より短くても、要求された声を先に試す
+        let h = slow_hub(YAML, &[("108", Some(50)), ("kiritan", Some(10))]);
+        let out = h.synthesize("あ", "voicevox:東北きりたん", true, None, after_ms(400)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "voicevox:東北きりたん/ノーマル");
+    }
+
+    #[tokio::test]
+    async fn deadline_gives_up_when_no_candidate_answers_in_time() {
+        let h = slow_hub(YAML, &[("108", Some(5000)), ("kiritan", Some(5000)), ("3", Some(5000))]);
+        let started = Instant::now();
+        let r = h.synthesize("あ", "voicevox:東北きりたん", true, None, after_ms(300)).await;
+        assert!(matches!(r, Err(HubError::Unavailable(_))));
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn deadline_bounds_the_queue_wait() {
+        let yaml = YAML.replace("backends: [http://b]", "backends: [http://b], max_concurrency_per_backend: 1");
+        // ずんだもんは応答したまま送り終えないので、枠をふさぎ続ける
+        let h = slow_hub(&yaml, &[("3", None)]);
+        let _busy = h.synthesize("あ", "voicevox:ずんだもん", false, None, None).await.ok().unwrap();
+        let started = Instant::now();
+        let r = h.synthesize("あ", "voicevox:ずんだもん", false, None, after_ms(200)).await;
+        assert!(r.is_err());
+        // 空き待ちの上限（既定 10 秒）ではなく、期限で打ち切る
+        assert!(started.elapsed() < Duration::from_millis(400), "{:?}", started.elapsed());
+    }
 
     fn addresses(list: &[Voice]) -> Vec<&str> {
         list.iter().map(|v| v.address.as_str()).collect()

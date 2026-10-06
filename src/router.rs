@@ -72,6 +72,10 @@ pub struct Engine {
 impl Engine {
     pub fn new(name: &str, config: EngineConfig, http: reqwest::Client) -> Result<Self, String> {
         let plugin = engine::create(&config)?;
+        Ok(Self::with_plugin(name, config, http, plugin))
+    }
+
+    pub(crate) fn with_plugin(name: &str, config: EngineConfig, http: reqwest::Client, plugin: Arc<dyn EnginePlugin>) -> Self {
         let api_key = match &config.api_key_env {
             Some(env) => match std::env::var(env) {
                 Ok(k) if !k.is_empty() => Some(k),
@@ -98,7 +102,7 @@ impl Engine {
                 })
             })
             .collect();
-        Ok(Self { name: name.to_owned(), config, plugin, backends, rr: AtomicUsize::new(0) })
+        Self { name: name.to_owned(), config, plugin, backends, rr: AtomicUsize::new(0) }
     }
 
     /// 試す順のバックエンド。振り分け方で並べたうえで、稼働中のものを先にする
@@ -125,6 +129,7 @@ impl Engine {
     }
 
     /// 合成する。接続できない・時間切れなどのときは同じエンジンの別のバックエンドで再試行する。
+    /// `until` があれば、空き待ちも応答開始の待ちもその時刻で打ち切る（利用者が待てる時間。DESIGN §6.2）。
     /// 戻り値: (音声, 使ったバックエンド, 最初に試したバックエンドから切り替えたか)
     pub async fn synthesize(
         &self,
@@ -132,15 +137,23 @@ impl Engine {
         text: &str,
         params: &Params,
         t: &Timeouts,
+        until: Option<Instant>,
     ) -> Result<(AudioBody, String, bool), EngineError> {
         let mut last = EngineError::Unavailable("バックエンドがない".into());
+        // 期限までの残り。期限がなければ上限なし
+        let left = || until.map(|u| u.saturating_duration_since(Instant::now()));
         // ここで記録するものに本文を含めない（エラーの文言は URL を除いてある）
         for (i, b) in self.order().into_iter().enumerate() {
+            if left().is_some_and(|d| d.is_zero()) {
+                return Err(EngineError::Unavailable("期限までに合成を始められなかった".into()));
+            }
+            let queue_wait = Duration::from_millis(t.queue_wait_ms).min(left().unwrap_or(Duration::MAX));
             let waiting = Instant::now();
-            let permit = match timeout(Duration::from_millis(t.queue_wait_ms), b.slots.clone().acquire_owned()).await {
+            let permit = match timeout(queue_wait, b.slots.clone().acquire_owned()).await {
                 Ok(Ok(p)) => p,
                 _ => {
-                    tracing::warn!(backend = %b.url, wait_ms = t.queue_wait_ms, "同時合成数の空き待ちが時間切れ");
+                    let wait_ms = queue_wait.as_millis() as u64;
+                    tracing::warn!(backend = %b.url, wait_ms, "同時合成数の空き待ちが時間切れ");
                     last = EngineError::Unavailable(format!("{}: 同時合成数の空き待ちが時間切れ", b.url));
                     continue;
                 }
@@ -152,7 +165,10 @@ impl Engine {
             let active = ActiveGuard::new(b.active.clone());
             let synthesizing = Instant::now();
             let elapsed_ms = || synthesizing.elapsed().as_millis() as u64;
-            match timeout(self.response_timeout(t), self.plugin.synthesize(&b.client, voice, text, params)).await {
+            // 期限の残りがエンジンの上限より短ければ、残りで打ち切る（そのときの時間切れはバックエンドのせいにしない）
+            let engine_limit = self.response_timeout(t);
+            let limit = engine_limit.min(left().unwrap_or(Duration::MAX));
+            match timeout(limit, self.plugin.synthesize(&b.client, voice, text, params)).await {
                 Ok(Ok(body)) => {
                     b.mark_ok();
                     // 同時合成数の枠は、エンジンから音声を受け取り終えるまで持つ（利用者が読み終えるまでは持たない）
@@ -167,6 +183,10 @@ impl Engine {
                     tracing::warn!(backend = %b.url, error = %e, elapsed_ms = elapsed_ms(), "バックエンドで合成に失敗");
                     b.mark_fail(&e.to_string());
                     last = e;
+                }
+                Err(_) if limit < engine_limit => {
+                    tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "期限までにバックエンドが応答を始めなかった");
+                    return Err(EngineError::Unavailable(format!("{}: 期限までに応答が始まらなかった", b.url)));
                 }
                 Err(_) => {
                     tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "バックエンドの応答開始が時間切れ");

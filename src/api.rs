@@ -1,7 +1,7 @@
 //! 外部 API
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -99,7 +99,13 @@ struct SpeechRequest {
     format: FormatRequest,
     #[serde(default)]
     fallback: FallbackMode,
+    /// 受付から音声を返し始めるまでに待てる時間。過ぎそうなら代わりの声に切り替え、それでも間に合わなければエラー
+    #[serde(default)]
+    deadline_ms: Option<u64>,
 }
+
+/// `deadline_ms` に指定できる上限（打ち間違いで実質無期限にならないように）
+const MAX_DEADLINE_MS: u64 = 600_000;
 
 #[derive(Deserialize, Default)]
 struct FormatRequest {
@@ -211,7 +217,20 @@ async fn speech_inner(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_format", "unsupported sample_rate or channels"));
     }
 
-    let outcome = hub.synthesize(&req.text, voice, req.fallback == FallbackMode::Auto, client.as_ref()).await?;
+    let deadline = match req.deadline_ms {
+        None => None,
+        Some(ms @ 1..=MAX_DEADLINE_MS) => Some(started + Duration::from_millis(ms)),
+        Some(_) => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_deadline",
+                format!("deadline_ms must be between 1 and {MAX_DEADLINE_MS}"),
+            ))
+        }
+    };
+
+    let fallback = req.fallback == FallbackMode::Auto;
+    let outcome = hub.synthesize(&req.text, voice, fallback, client.as_ref(), deadline).await?;
 
     tracing::info!(
         resolved = %outcome.voice.address,

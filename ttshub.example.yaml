@@ -19,6 +19,9 @@ engines:
     default_voice: ずんだもん/ノーマル
     # VOICEVOX は音声を一括で返すため、長文だと応答開始まで時間がかかる
     response_start_ms: 60000
+    # VOICEVOX は 1 件ずつしか合成しない（同時に送るとエンジンの中で順番を待つ）。
+    # 1 にしておくと、待ちが ttshub から見え、期限（deadline_ms）に間に合わなければ代わりの声に回せる
+    max_concurrency_per_backend: 1
 
   # compose の ebyroid プロファイルで動かす ebyroid
   # ebyroid:

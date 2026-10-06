@@ -57,7 +57,7 @@ default                                             利用者ごと、または�
 
 | エンドポイント | 内容 |
 |---|---|
-| `POST /v1/speech` | 合成。本文は `{ "text", "voice", "format": { "codec", "sample_rate", "channels" }, "fallback" }`。`codec` は `pcm_s16le`（既定）か `wav`。`fallback` を `none` にすると、代わりの声を使わずにエラーを返す |
+| `POST /v1/speech` | 合成。本文は `{ "text", "voice", "format": { "codec", "sample_rate", "channels" }, "fallback" }`。`codec` は `pcm_s16le`（既定）か `wav`。`fallback` を `none` にすると、代わりの声を使わずにエラーを返す。`deadline_ms` を付けると、受付からその時間内に音声を返し始める（間に合いそうになければ代わりの声に切り替え、それでも間に合わなければ `503`） |
 | `GET /v1/voices` | 話者の一覧と検索（`q`, `engine`, `limit`, `cursor`） |
 | `GET /v1/voices/resolve` | あいまい照合（`q`）。一致した話者と、見つからなかったときの候補を返す |
 | `GET /v1/health` | ttshub の稼働確認 |
@@ -86,7 +86,7 @@ default                                             利用者ごと、または�
 | `engines.<名前>.plugin` | プラグインの種類 |
 | `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける |
 | `engines.<名前>.balance` | `round_robin`（既定）/ `least_connections` / `primary_backup` |
-| `engines.<名前>.max_concurrency_per_backend` | バックエンドごとの同時合成数（既定 3） |
+| `engines.<名前>.max_concurrency_per_backend` | バックエンドごとの同時合成数（既定 3）。1 件ずつしか合成しないエンジン（VOICEVOX など）は 1 にする。多くしてもエンジンの中で順番を待つだけで、ttshub から待ちが見えなくなる |
 | `engines.<名前>.credits` | キャラ名 → クレジット表記。エンジンが申告する表記より優先する。申告のないエンジン（ebyroid）や、規約が表記を指定しないキャラに書く |
 | `engines.<名前>.terms_url` | 利用規約の URL。エンジンが話者ごとの URL を申告しないときに使う |
 | `engines.<名前>.default_voice` | そのエンジンのデフォルト話者（`キャラ[/スタイル]`） |
@@ -94,6 +94,7 @@ default                                             利用者ごと、または�
 | `engines.<名前>.models` | 使う音声モデル（`aivis-cloud` ではモデルの UUID） |
 | `engines.<名前>.api_key_env` | API キーを入れた環境変数名（クラウドのエンジン用） |
 | `engines.<名前>.response_start_ms` | 応答開始までの上限（既定 15000）。音声を一括で返すエンジンは長めにする |
+| `timeouts` | `queue_wait_ms`: 同時合成数の空きを待つ上限（既定 10000）。`response_start_ms`: 応答開始までの上限の既定（既定 15000）。`fallback_reserve_ms`: `deadline_ms` を指定されたとき、代わりの声を試すために残しておく時間（既定 2000） |
 | `equivalents` | 同じキャラの別エンジンでの対応。エンジンが止まったときの代わりの声になる（同じスタイルがあればそれを使う） |
 | `aliases` | 別名 → アドレス |
 | `presets` | プリセット名 → パラメータ付きのアドレス |

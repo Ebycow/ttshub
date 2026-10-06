@@ -100,6 +100,8 @@ pub struct Timeouts {
     pub response_start_ms: u64,
     /// バックエンドの同時合成数の空きを待つ上限
     pub queue_wait_ms: u64,
+    /// 利用者が待てる時間（`deadline_ms`）を指定したとき、代わりの声を試すために残しておく時間
+    pub fallback_reserve_ms: u64,
     /// ヘルスチェックの間隔
     pub health_interval_ms: u64,
     /// カタログを取り直す間隔
@@ -108,7 +110,13 @@ pub struct Timeouts {
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { response_start_ms: 15_000, queue_wait_ms: 10_000, health_interval_ms: 10_000, catalog_refresh_secs: 600 }
+        Self {
+            response_start_ms: 15_000,
+            queue_wait_ms: 10_000,
+            fallback_reserve_ms: 2_000,
+            health_interval_ms: 10_000,
+            catalog_refresh_secs: 600,
+        }
     }
 }
 
