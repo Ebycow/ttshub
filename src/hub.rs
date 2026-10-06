@@ -560,6 +560,32 @@ presets:
     }
 
     #[tokio::test]
+    async fn abandoned_synthesis_keeps_the_slot_until_the_engine_finishes() {
+        let yaml = YAML.replace("backends: [http://b]", "backends: [http://b], max_concurrency_per_backend: 1");
+        // 四国めたんは 500ms かかるが、利用者は 150ms しか待てない
+        let h = slow_hub(&yaml, &[("2", Some(500)), ("3", Some(10)), ("kiritan", Some(10))]);
+        let r = h.synthesize("あ", "voicevox:四国めたん", false, None, after_ms(150)).await;
+        assert!(r.is_err());
+        // 打ち切った後もエンジンは計算しているので、枠は埋まったまま（裏のタスクが打ち切りに気づくのを待つ）
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let st = &h.engines["voicevox"].status()[0];
+        assert_eq!((st.active, st.overrun), (1, 1));
+
+        // 期限のある合成は、計算中のエンジンで待たずに別のエンジンへ回る
+        let started = Instant::now();
+        let out = h.synthesize("あ", "voicevox:ずんだもん", true, None, after_ms(1000)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "ebyroid:kiritan");
+        assert!(started.elapsed() < Duration::from_millis(200), "{:?}", started.elapsed());
+
+        // エンジンが終えたら枠を返す
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let st = &h.engines["voicevox"].status()[0];
+        assert_eq!((st.active, st.overrun), (0, 0));
+        let out = h.synthesize("あ", "voicevox:ずんだもん", true, None, after_ms(1000)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "voicevox:ずんだもん/ノーマル");
+    }
+
+    #[tokio::test]
     async fn short_deadline_still_tries_the_requested_voice() {
         // 期限（400ms）が残しておく時間（既定 2 秒）より短くても、要求された声を先に試す
         let h = slow_hub(YAML, &[("108", Some(50)), ("kiritan", Some(10))]);

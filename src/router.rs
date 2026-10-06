@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use serde::Serialize;
-use tokio::sync::Semaphore;
+use tokio::sync::{oneshot, Semaphore};
+use tokio::time::error::Elapsed;
 use tokio::time::timeout;
 
 use crate::config::{Balance, EngineConfig, Timeouts};
@@ -28,6 +29,8 @@ pub struct Backend {
     healthy: AtomicBool,
     fails: AtomicU32,
     active: Arc<AtomicUsize>,
+    /// 打ち切った（利用者がもう待っていない）合成をエンジンがまだ計算している数
+    overrun: Arc<AtomicUsize>,
     slots: Arc<Semaphore>,
     last_error: Mutex<Option<String>>,
 }
@@ -58,6 +61,7 @@ pub struct BackendStatus {
     pub url: String,
     pub healthy: bool,
     pub active: usize,
+    pub overrun: usize,
     pub last_error: Option<String>,
 }
 
@@ -97,6 +101,7 @@ impl Engine {
                     healthy: AtomicBool::new(true),
                     fails: AtomicU32::new(0),
                     active: Arc::new(AtomicUsize::new(0)),
+                    overrun: Arc::new(AtomicUsize::new(0)),
                     slots: Arc::new(Semaphore::new(config.max_concurrency_per_backend)),
                     last_error: Mutex::new(None),
                 })
@@ -147,6 +152,12 @@ impl Engine {
             if left().is_some_and(|d| d.is_zero()) {
                 return Err(EngineError::Unavailable("期限までに合成を始められなかった".into()));
             }
+            // 打ち切った合成をまだ計算しているエンジンは、いつ空くか分からない。期限のある合成は待たせずに次へ回す
+            if until.is_some() && b.overrun.load(Ordering::Relaxed) > 0 {
+                tracing::info!(backend = %b.url, "打ち切った合成をまだ計算中のため、このバックエンドを飛ばす");
+                last = EngineError::Unavailable(format!("{}: 打ち切った合成をまだ計算中", b.url));
+                continue;
+            }
             let queue_wait = Duration::from_millis(t.queue_wait_ms).min(left().unwrap_or(Duration::MAX));
             let waiting = Instant::now();
             let permit = match timeout(queue_wait, b.slots.clone().acquire_owned()).await {
@@ -162,17 +173,26 @@ impl Engine {
             if waited >= SLOW_QUEUE_WAIT {
                 tracing::warn!(backend = %b.url, wait_ms = waited.as_millis() as u64, "同時合成数の空き待ちが長かった");
             }
-            let active = ActiveGuard::new(b.active.clone());
+            let guard = (permit, ActiveGuard::new(b.active.clone()));
             let synthesizing = Instant::now();
             let elapsed_ms = || synthesizing.elapsed().as_millis() as u64;
-            // 期限の残りがエンジンの上限より短ければ、残りで打ち切る（そのときの時間切れはバックエンドのせいにしない）
             let engine_limit = self.response_timeout(t);
-            let limit = engine_limit.min(left().unwrap_or(Duration::MAX));
-            match timeout(limit, self.plugin.synthesize(&b.client, voice, text, params)).await {
+            let rx = self.spawn_synthesis(&b, voice, text, params, engine_limit, guard);
+            // 期限の残りがエンジンの上限より短ければ、残りで打ち切る（そのときの時間切れはバックエンドのせいにしない）。
+            // 打ち切っても合成は裏で続き、エンジンが応答するまで枠を持つ
+            let received = match left().filter(|d| *d < engine_limit) {
+                Some(d) => match timeout(d, rx).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "期限までにバックエンドが応答を始めなかった");
+                        return Err(EngineError::Unavailable(format!("{}: 期限までに応答が始まらなかった", b.url)));
+                    }
+                },
+                None => rx.await,
+            };
+            match received.unwrap_or_else(|_| Ok(Err(EngineError::Unavailable("合成のタスクが異常終了した".into())))) {
                 Ok(Ok(body)) => {
                     b.mark_ok();
-                    // 同時合成数の枠は、エンジンから音声を受け取り終えるまで持つ（利用者が読み終えるまでは持たない）
-                    let body = body.map_stream(|s| release_when_received(s, (permit, active)));
                     return Ok((body, b.url.clone(), i > 0));
                 }
                 Ok(Err(EngineError::Rejected(m))) => {
@@ -184,10 +204,6 @@ impl Engine {
                     b.mark_fail(&e.to_string());
                     last = e;
                 }
-                Err(_) if limit < engine_limit => {
-                    tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "期限までにバックエンドが応答を始めなかった");
-                    return Err(EngineError::Unavailable(format!("{}: 期限までに応答が始まらなかった", b.url)));
-                }
                 Err(_) => {
                     tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "バックエンドの応答開始が時間切れ");
                     b.mark_fail("応答開始の時間切れ");
@@ -196,6 +212,46 @@ impl Engine {
             }
         }
         Err(last)
+    }
+
+    /// 合成を別のタスクで行い、結果を返す受け口を返す。同時合成数の枠（guard）はタスクが持つ。
+    /// 期限や利用者の切断で受け口が捨てられても、エンジンは計算を続ける（VOICEVOX は途中で止められない）。
+    /// そのため合成は捨てずに続け、エンジンが応答するか上限（engine_limit）が来るまで枠を持つ。
+    /// こうしないと計算中のエンジンが空いて見え、後から来た合成をエンジンの中で待たせてしまう。
+    /// 応答が始まったら、枠は音声を受け取り終えるまで持つ（release_when_received）
+    fn spawn_synthesis<G: Send + 'static>(
+        &self,
+        b: &Arc<Backend>,
+        voice: &VoiceEntry,
+        text: &str,
+        params: &Params,
+        engine_limit: Duration,
+        guard: G,
+    ) -> oneshot::Receiver<Result<Result<AudioBody, EngineError>, Elapsed>> {
+        let (mut tx, rx) = oneshot::channel();
+        let (plugin, b) = (self.plugin.clone(), b.clone());
+        let (voice, text, params) = (voice.clone(), text.to_owned(), params.clone());
+        tokio::spawn(async move {
+            let work = timeout(engine_limit, async { plugin.synthesize(&b.client, &voice, &text, &params).await });
+            tokio::pin!(work);
+            let result = tokio::select! {
+                r = &mut work => r,
+                _ = tx.closed() => {
+                    // 打ち切られた。エンジンが計算を終えるまで、枠と「打ち切った合成を計算中」の印を持つ
+                    let started = Instant::now();
+                    let _overrun = ActiveGuard::new(b.overrun.clone());
+                    let r = work.await;
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    match r {
+                        Ok(_) => tracing::info!(backend = %b.url, elapsed_ms, "打ち切った合成をエンジンが終えた。枠を返す"),
+                        Err(_) => tracing::warn!(backend = %b.url, elapsed_ms, "打ち切った合成が上限までに終わらなかった。枠を返す"),
+                    }
+                    return;
+                }
+            };
+            let _ = tx.send(result.map(|r| r.map(|body| body.map_stream(|s| release_when_received(s, guard)))));
+        });
+        rx
     }
 
     /// 話者一覧を、稼働中のバックエンドから記述順に試して取得する
@@ -250,6 +306,7 @@ impl Engine {
                 url: b.url.clone(),
                 healthy: b.is_healthy(),
                 active: b.active.load(Ordering::Relaxed),
+                overrun: b.overrun.load(Ordering::Relaxed),
                 last_error: b.last_error.lock().unwrap().clone(),
             })
             .collect()
