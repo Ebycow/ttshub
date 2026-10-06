@@ -8,6 +8,7 @@ mod config;
 mod engine;
 mod hub;
 mod params;
+mod reqlog;
 mod router;
 
 use std::path::PathBuf;

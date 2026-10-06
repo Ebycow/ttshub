@@ -13,10 +13,12 @@ use axum::{Json, Router};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tracing::Instrument;
 
 use crate::audio::{self, Codec, OutputFormat};
 use crate::catalog::SearchHit;
 use crate::hub::{ClientCtx, Hub, HubError};
+use crate::reqlog::{self, Outcome, RequestLog};
 
 pub fn router(hub: Arc<Hub>) -> Router {
     Router::new()
@@ -133,16 +135,63 @@ pub fn ext_value(s: &str) -> String {
     format!("UTF-8''{}", utf8_percent_encode(s, ATTR_CHAR))
 }
 
+/// 合成。受付から終了までを同じ ID で記録し（DESIGN §6.3）、ID は `X-TTS-Request-Id` で返す。
+/// 利用者が `X-Request-Id` を付けてきたら、その ID を使う（利用者側のログと突き合わせるため）
 async fn speech(
     State(hub): State<Arc<Hub>>,
     headers: HeaderMap,
     body: Result<Json<SpeechRequest>, JsonRejection>,
-) -> Result<Response, ApiError> {
+) -> Response {
     let started = Instant::now();
-    let client = client(&hub, &headers)?;
-    let Json(req) = body.map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text()))?;
+    let id = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| reqlog::valid_id(v))
+        .map_or_else(reqlog::new_id, str::to_owned);
+    let span = tracing::info_span!("speech", id = %id);
+
+    let mut log = None;
+    let result = speech_inner(&hub, &headers, body, started, &id, &mut log).instrument(span).await;
+    let mut resp = match result {
+        Ok(resp) => resp,
+        Err(e) => {
+            if let Some(log) = log.as_mut() {
+                // 本文が混ざらないよう、合成できなかったときの説明（声とエンジンのエラー）以外はコードだけ記録する
+                match e.status {
+                    StatusCode::SERVICE_UNAVAILABLE => log.finish(Outcome::Unavailable, Some(&e.message)),
+                    _ => log.finish(Outcome::Rejected, Some(e.code)),
+                }
+            }
+            e.into_response()
+        }
+    };
+    if let Ok(v) = HeaderValue::from_str(&id) {
+        resp.headers_mut().insert("x-tts-request-id", v);
+    }
+    resp
+}
+
+/// `log` には受付を記録した後のリクエストの記録を入れる。応答を返すときは、流し終えるまで記録をストリームに持たせる
+async fn speech_inner(
+    hub: &Hub,
+    headers: &HeaderMap,
+    body: Result<Json<SpeechRequest>, JsonRejection>,
+    started: Instant,
+    id: &str,
+    slot: &mut Option<RequestLog>,
+) -> Result<Response, ApiError> {
+    let client = client(hub, headers)?;
+    let client_name = client.as_ref().map(|c| c.name.as_str()).unwrap_or("-");
+    let Json(req) = body.map_err(|e| {
+        // 解析エラーの文言は本文の一部を引用することがあるため、記録しない（利用者への応答には含める）
+        tracing::info!(client = client_name, "受付を拒否（JSON が正しくない）");
+        ApiError::new(StatusCode::BAD_REQUEST, "bad_request", e.body_text())
+    })?;
 
     let chars = req.text.chars().count();
+    let voice = req.voice.as_deref().unwrap_or("default");
+    *slot = Some(RequestLog::start(id.to_owned(), started, client_name, chars, voice));
+
     if req.text.trim().is_empty() {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "empty_text", "text is empty"));
     }
@@ -162,22 +211,20 @@ async fn speech(
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_format", "unsupported sample_rate or channels"));
     }
 
-    let voice = req.voice.as_deref().unwrap_or("default");
     let outcome = hub.synthesize(&req.text, voice, req.fallback == FallbackMode::Auto, client.as_ref()).await?;
 
-    // 本文は記録しない（文字数だけ）
     tracing::info!(
-        client = client.as_ref().map(|c| c.name.as_str()).unwrap_or("-"),
-        chars,
-        requested = voice,
         resolved = %outcome.voice.address,
         fallback = outcome.reason.as_str(),
         backend = %outcome.backend,
         response_start_ms = started.elapsed().as_millis() as u64,
-        "speech"
+        "応答開始"
     );
 
-    let mut resp = Response::new(Body::from_stream(audio::convert(outcome.body, out, outcome.gain)));
+    let bytes_per_sec = u64::from(out.sample_rate) * u64::from(out.channels) * 2;
+    let audio = audio::convert(outcome.body, out, outcome.gain);
+    let tracked = slot.take().expect("受付を記録した").track(audio, bytes_per_sec);
+    let mut resp = Response::new(Body::from_stream(tracked));
     let h = resp.headers_mut();
     let set = |h: &mut HeaderMap, name: &'static str, value: String| {
         if let Ok(v) = HeaderValue::from_str(&value) {

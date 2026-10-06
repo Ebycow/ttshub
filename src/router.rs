@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use serde::Serialize;
@@ -16,6 +16,8 @@ use crate::params::Params;
 /// 連続でこの回数失敗したら切り離す
 const FAILS_TO_DOWN: u32 = 2;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
+/// 同時合成数の空き待ちがこれより長かったら記録する
+const SLOW_QUEUE_WAIT: Duration = Duration::from_secs(1);
 
 pub struct Backend {
     pub url: String,
@@ -129,15 +131,24 @@ impl Engine {
         t: &Timeouts,
     ) -> Result<(AudioBody, String, bool), EngineError> {
         let mut last = EngineError::Unavailable("バックエンドがない".into());
+        // ここで記録するものに本文を含めない（エラーの文言は URL を除いてある）
         for (i, b) in self.order().into_iter().enumerate() {
+            let waiting = Instant::now();
             let permit = match timeout(Duration::from_millis(t.queue_wait_ms), b.slots.clone().acquire_owned()).await {
                 Ok(Ok(p)) => p,
                 _ => {
+                    tracing::warn!(backend = %b.url, wait_ms = t.queue_wait_ms, "同時合成数の空き待ちが時間切れ");
                     last = EngineError::Unavailable(format!("{}: 同時合成数の空き待ちが時間切れ", b.url));
                     continue;
                 }
             };
+            let waited = waiting.elapsed();
+            if waited >= SLOW_QUEUE_WAIT {
+                tracing::warn!(backend = %b.url, wait_ms = waited.as_millis() as u64, "同時合成数の空き待ちが長かった");
+            }
             let active = ActiveGuard::new(b.active.clone());
+            let synthesizing = Instant::now();
+            let elapsed_ms = || synthesizing.elapsed().as_millis() as u64;
             match timeout(self.response_timeout(t), self.plugin.synthesize(&b.client, voice, text, params)).await {
                 Ok(Ok(body)) => {
                     b.mark_ok();
@@ -145,12 +156,17 @@ impl Engine {
                     let body = body.map_stream(|s| hold(s, (permit, active)));
                     return Ok((body, b.url.clone(), i > 0));
                 }
-                Ok(Err(EngineError::Rejected(m))) => return Err(EngineError::Rejected(m)),
+                Ok(Err(EngineError::Rejected(m))) => {
+                    tracing::warn!(backend = %b.url, error = %m, elapsed_ms = elapsed_ms(), "エンジンが要求を受け付けなかった");
+                    return Err(EngineError::Rejected(m));
+                }
                 Ok(Err(e)) => {
+                    tracing::warn!(backend = %b.url, error = %e, elapsed_ms = elapsed_ms(), "バックエンドで合成に失敗");
                     b.mark_fail(&e.to_string());
                     last = e;
                 }
                 Err(_) => {
+                    tracing::warn!(backend = %b.url, elapsed_ms = elapsed_ms(), "バックエンドの応答開始が時間切れ");
                     b.mark_fail("応答開始の時間切れ");
                     last = EngineError::Unavailable(format!("{}: 応答開始の時間切れ", b.url));
                 }
