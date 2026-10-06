@@ -181,6 +181,12 @@ impl Catalog {
         engine: Option<&str>,
         extras: &[Named],
     ) -> Vec<SearchHit> {
+        // 「aivis」「aivis:まお」のようにエンジン名で書かれていたら、そのエンジンに絞る
+        let (named_engine, q) = split_engine(order, q);
+        let engine = match (engine, named_engine) {
+            (Some(a), Some(b)) if a != b => return vec![],
+            (a, b) => a.or(b),
+        };
         let voices: Vec<Voice> =
             self.all(order).into_iter().filter(|v| engine.is_none_or(|e| v.engine == e)).collect();
         let q = Query::new(q);
@@ -300,6 +306,21 @@ fn candidates<'a>(voices: &'a [Voice], extras: &'a [Named]) -> Vec<Candidate<'a>
         char_default: true,
     }));
     out
+}
+
+/// 検索語の先頭のエンジン名を切り出す。エンジン名だけなら残りは空
+fn split_engine<'a, 'o>(order: &'o [String], q: &'a str) -> (Option<&'o str>, &'a str) {
+    let t = q.trim();
+    let find = |name: &str| order.iter().find(|o| o.eq_ignore_ascii_case(name.trim())).map(String::as_str);
+    if let Some((e, rest)) = t.split_once(':') {
+        if let Some(e) = find(e) {
+            return (Some(e), rest);
+        }
+    }
+    match find(t) {
+        Some(e) => (Some(e), ""),
+        None => (None, t),
+    }
 }
 
 /// 照合する文字列。空白か `/` で区切られていれば、最後の語をスタイル名とみなした照合もする
@@ -512,5 +533,9 @@ mod tests {
         assert_eq!(first, "voicevox:ずんだもん/ノーマル");
         assert_eq!(hits.len(), 3);
         assert_eq!(cat.search(&order, "", Some("ebyroid"), &[]).len(), 3);
+        // エンジン名だけ、またはエンジン名付きでも絞り込める
+        assert_eq!(cat.search(&order, "ebyroid", None, &[]).len(), 3);
+        assert_eq!(cat.search(&order, "VoiceVox:ずんだ", None, &[]).len(), 3);
+        assert!(cat.search(&order, "voicevox:ずんだ", Some("ebyroid"), &[]).is_empty());
     }
 }
