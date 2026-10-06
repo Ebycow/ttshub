@@ -61,7 +61,7 @@ default                                             利用者ごと、または�
 | `GET /v1/voices` | 話者の一覧と検索（`q`, `engine`, `limit`, `cursor`） |
 | `GET /v1/voices/resolve` | あいまい照合（`q`）。一致した話者と、見つからなかったときの候補を返す |
 | `GET /v1/health` | ttshub の稼働確認 |
-| `GET /admin/engines` | エンジンとバックエンドの状態 |
+| `GET /admin/engines` | エンジンとバックエンドの状態（`overrun` は打ち切った合成をエンジンがまだ計算している数、`overrun_oldest_ms` はそのうち一番古いものの経過時間） |
 | `POST /admin/catalog/refresh` | 話者一覧の取り直し |
 
 合成のレスポンスヘッダ:
@@ -93,8 +93,8 @@ default                                             利用者ごと、または�
 | `engines.<名前>.billable` | 課金のあるエンジン。フォールバック先にしない |
 | `engines.<名前>.models` | 使う音声モデル（`aivis-cloud` ではモデルの UUID） |
 | `engines.<名前>.api_key_env` | API キーを入れた環境変数名（クラウドのエンジン用） |
-| `engines.<名前>.response_start_ms` | 応答開始までの上限（既定 15000）。音声を一括で返すエンジンは長めにする |
-| `timeouts` | `queue_wait_ms`: 同時合成数の空きを待つ上限（既定 10000）。`response_start_ms`: 応答開始までの上限の既定（既定 15000）。`fallback_reserve_ms`: `deadline_ms` を指定されたとき、代わりの声を試すために残しておく時間（既定 2000） |
+| `engines.<名前>.response_start_ms` | 利用者を応答開始まで待たせる上限（既定 15000）。音声を一括で返すエンジンは長めにする。過ぎたら利用者にはエラーを返すが、エンジンが計算を終えるまで同時合成数の枠は返さない（その間、期限付きの合成はこのバックエンドを飛ばす） |
+| `timeouts` | `queue_wait_ms`: 同時合成数の空きを待つ上限（既定 10000）。`response_start_ms`: 利用者を応答開始まで待たせる上限の既定（既定 15000）。`fallback_reserve_ms`: `deadline_ms` を指定されたとき、代わりの声を試すために残しておく時間（既定 2000） |
 | `equivalents` | 同じキャラの別エンジンでの対応。エンジンが止まったときの代わりの声になる（同じスタイルがあればそれを使う） |
 | `aliases` | 別名 → アドレス |
 | `presets` | プリセット名 → パラメータ付きのアドレス |

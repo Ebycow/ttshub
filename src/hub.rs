@@ -85,8 +85,11 @@ pub struct Hub {
 
 impl Hub {
     pub fn new(config: Config) -> Result<Self, String> {
+        // 合成は上限を設けずにエンジンの応答を待つことがある（打ち切った合成の計算が終わるまで枠を持つ）。
+        // エンジンのマシンごと落ちて切断が届かなくても気づけるよう、TCP keepalive を使う
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;
         let mut engines = IndexMap::new();
@@ -583,6 +586,32 @@ presets:
         assert_eq!((st.active, st.overrun), (0, 0));
         let out = h.synthesize("あ", "voicevox:ずんだもん", true, None, after_ms(1000)).await.ok().unwrap();
         assert_eq!(out.voice.address, "voicevox:ずんだもん/ノーマル");
+    }
+
+    #[tokio::test]
+    async fn timed_out_synthesis_keeps_the_slot_past_response_start_ms() {
+        let yaml = YAML.replace(
+            "backends: [http://b]",
+            "backends: [http://b], max_concurrency_per_backend: 1, response_start_ms: 100",
+        );
+        // 四国めたんは 600ms かかるが、エンジンの上限（response_start_ms）は 100ms
+        let h = slow_hub(&yaml, &[("2", Some(600)), ("3", Some(10)), ("kiritan", Some(10))]);
+        let started = Instant::now();
+        let r = h.synthesize("あ", "voicevox:四国めたん", false, None, None).await;
+        assert!(r.is_err());
+        assert!(started.elapsed() < Duration::from_millis(300), "{:?}", started.elapsed());
+
+        // 上限を過ぎても、エンジンが終えるまで枠を返さない
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let st = &h.engines["voicevox"].status()[0];
+        assert_eq!((st.active, st.overrun), (1, 1));
+        assert!(st.overrun_oldest_ms.is_some_and(|ms| ms >= 200), "{:?}", st.overrun_oldest_ms);
+        let out = h.synthesize("あ", "voicevox:ずんだもん", true, None, after_ms(1000)).await.ok().unwrap();
+        assert_eq!(out.voice.address, "ebyroid:kiritan");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let st = &h.engines["voicevox"].status()[0];
+        assert_eq!((st.active, st.overrun, st.overrun_oldest_ms), (0, 0, None));
     }
 
     #[tokio::test]
