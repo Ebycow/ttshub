@@ -213,6 +213,9 @@ struct VoicesQuery {
     engine: Option<String>,
     limit: Option<usize>,
     cursor: Option<String>,
+    /// true なら、稼働中のバックエンドがある論理エンジンの話者（と、それを指す別名・プリセット）だけを返す
+    #[serde(default)]
+    available: bool,
 }
 
 async fn voices(
@@ -223,11 +226,26 @@ async fn voices(
     client(&hub, &headers)?;
     let limit = q.limit.unwrap_or(25).clamp(1, 200);
     let offset: usize = q.cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
-    let hits = hub.catalog.search(&hub.order, &q.q, q.engine.as_deref(), &hub.named_targets());
+    let mut hits = hub.catalog.search(&hub.order, &q.q, q.engine.as_deref(), &hub.named_targets());
+    if q.available {
+        hits.retain(|h| hit_available(&hub, h));
+    }
     let total = hits.len();
     let page: Vec<Value> = hits.into_iter().skip(offset).take(limit).map(|h| hit_json(&hub, h)).collect();
     let next = (offset + limit < total).then(|| (offset + limit).to_string());
     Ok(Json(json!({ "voices": page, "next_cursor": next })))
+}
+
+/// 話者はその論理エンジンが稼働中か。別名・プリセットは指す先のエンジンで判断し、エンジンが分からなければ残す
+fn hit_available(hub: &Hub, hit: &SearchHit) -> bool {
+    let engine = match hit {
+        SearchHit::Voice(v) => Some(v.engine.as_str()),
+        SearchHit::Named { target, .. } => target.split_once(':').map(|(e, _)| e),
+    };
+    match engine.and_then(|e| hub.engines.get(e)) {
+        Some(e) => e.is_available(),
+        None => !matches!(hit, SearchHit::Voice(_)),
+    }
 }
 
 fn hit_json(hub: &Hub, hit: SearchHit) -> Value {
