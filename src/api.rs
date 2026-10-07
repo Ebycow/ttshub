@@ -141,7 +141,7 @@ pub fn ext_value(s: &str) -> String {
     format!("UTF-8''{}", utf8_percent_encode(s, ATTR_CHAR))
 }
 
-/// 合成。受付から終了までを同じ ID で記録し（DESIGN §6.3）、ID は `X-TTS-Request-Id` で返す。
+/// 合成。受付から終了までを同じ ID で記録し、ID は `X-TTS-Request-Id` で返す。
 /// 利用者が `X-Request-Id` を付けてきたら、その ID を使う（利用者側のログと突き合わせるため）
 async fn speech(
     State(hub): State<Arc<Hub>>,
