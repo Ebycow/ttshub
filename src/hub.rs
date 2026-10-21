@@ -667,7 +667,7 @@ presets:
     }
 
     #[test]
-    fn fallback_chain_follows_design_order() {
+    fn fallback_chain_tries_equivalents_then_defaults() {
         let h = hub(YAML);
         let req = h.expand("voicevox:東北きりたん", None).unwrap();
         assert_eq!(

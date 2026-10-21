@@ -87,7 +87,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slug_follows_design_examples() {
+    fn slug_handles_symbols_and_fullwidth() {
         assert_eq!(slug("小夜/SAYO"), "小夜-sayo");
         assert_eq!(slug("†聖騎士 紅桜†"), "聖騎士紅桜");
         assert_eq!(slug("ナースロボ＿タイプＴ"), "ナースロボ_タイプt");
