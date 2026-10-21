@@ -367,7 +367,7 @@ impl WavHeaderParser {
 }
 
 /// 長さ不明のストリーム用の WAV ヘッダ（サイズ欄は 0xFFFFFFFF）
-fn wav_header(sample_rate: u32, channels: u16) -> [u8; 44] {
+pub(crate) fn wav_header(sample_rate: u32, channels: u16) -> [u8; 44] {
     let mut h = [0u8; 44];
     let block_align = channels * 2;
     h[0..4].copy_from_slice(b"RIFF");

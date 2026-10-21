@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # 実エンジンは使わない（API のテストは偽の VOICEVOX をテスト内で立てる）
+      - run: cargo test --locked

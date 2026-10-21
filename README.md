@@ -112,3 +112,6 @@ docker run --rm -v "$PWD":/src -w /src \
   -v ttshub-cargo-registry:/usr/local/cargo/registry -v ttshub-target:/target -e CARGO_TARGET_DIR=/target \
   rust:1-slim-bookworm cargo test
 ```
+
+テストは実際のエンジンを使わない。API のテスト（`src/api.rs`）は偽の VOICEVOX をテストの中で立て、HTTP で通しで確かめる。
+GitHub Actions でも push と pull request のたびに同じテストを回す（`.github/workflows/ci.yml`）。

@@ -397,4 +397,312 @@ mod tests {
         assert_eq!(ext_value("VOICEVOX:ずんだもん"), "UTF-8''VOICEVOX%3A%E3%81%9A%E3%82%93%E3%81%A0%E3%82%82%E3%82%93");
         assert_eq!(ext_value("ebyroid:kiritan"), "UTF-8''ebyroid%3Akiritan");
     }
+
+    // ---- 偽の VOICEVOX を相手に、HTTP の API を通しで確かめる ----
+
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use crate::config::Config;
+
+    /// 偽のエンジンが返す音声（24kHz モノラル、0.1 秒の正弦波）
+    const ENGINE_RATE: u32 = 24000;
+
+    #[derive(Default)]
+    struct FakeEngine {
+        /// true なら合成を 500 で失敗させる
+        fail_synthesis: AtomicBool,
+        /// 最後に /synthesis が受け取った audio_query
+        last_query: Mutex<Option<Value>>,
+    }
+
+    async fn serve(router: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    async fn start_fake_engine(state: Arc<FakeEngine>) -> String {
+        let router = Router::new()
+            .route("/version", get(|| async { Json("0.0.0") }))
+            .route(
+                "/speakers",
+                get(|| async {
+                    Json(json!([
+                        { "name": "ずんだもん", "speaker_uuid": "u-zunda", "styles": [
+                            { "name": "ノーマル", "id": 3, "type": "talk" },
+                            { "name": "ハミング", "id": 99, "type": "sing" },
+                        ] },
+                        { "name": "四国めたん", "speaker_uuid": "u-metan", "styles": [{ "name": "ノーマル", "id": 2 }] },
+                    ]))
+                }),
+            )
+            .route(
+                "/speaker_info",
+                get(|Query(q): Query<HashMap<String, String>>| async move {
+                    let policy = match q["speaker_uuid"].as_str() {
+                        "u-zunda" => "「VOICEVOX:ずんだもん」と記載すれば利用可能です。\nhttps://example.com/zunda",
+                        _ => "",
+                    };
+                    Json(json!({ "policy": policy }))
+                }),
+            )
+            .route("/audio_query", post(|| async { Json(json!({ "speedScale": 1.0, "pitchScale": 0.0 })) }))
+            .route(
+                "/synthesis",
+                post(|State(s): State<Arc<FakeEngine>>, Json(q): Json<Value>| async move {
+                    *s.last_query.lock().unwrap() = Some(q);
+                    if s.fail_synthesis.load(Ordering::SeqCst) {
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                    let mut wav = audio::wav_header(ENGINE_RATE, 1).to_vec();
+                    for i in 0..ENGINE_RATE / 10 {
+                        let s = ((i as f32 * 440.0 * std::f32::consts::TAU / ENGINE_RATE as f32).sin() * 8000.0) as i16;
+                        wav.extend_from_slice(&s.to_le_bytes());
+                    }
+                    ([(header::CONTENT_TYPE, "audio/wav")], wav).into_response()
+                }),
+            )
+            .with_state(state);
+        serve(router).await
+    }
+
+    struct Fixture {
+        base: String,
+        engine: Arc<FakeEngine>,
+        http: reqwest::Client,
+    }
+
+    impl Fixture {
+        /// `extra` は設定の末尾に足す YAML
+        async fn start(extra: &str) -> Self {
+            let engine = Arc::new(FakeEngine::default());
+            let vv = start_fake_engine(engine.clone()).await;
+            let state_dir = std::env::temp_dir().join(format!("ttshub-test-{}", reqlog::new_id()));
+            let yaml = format!(
+                r#"
+default_voice: vv:ずんだもん
+state_dir: {}
+engines:
+  vv: {{ plugin: voicevox-compatible, backends: ["{vv}"] }}
+  down: {{ plugin: voicevox-compatible, backends: ["http://127.0.0.1:1"] }}
+aliases:
+  zundamon: vv:ずんだもん
+presets:
+  早口めたん: "vv:四国めたん?speed=1.5"
+{extra}"#,
+                state_dir.display()
+            );
+            let config: Config = serde_yaml::from_str(&yaml).unwrap();
+            let hub = Arc::new(Hub::new(config).unwrap());
+            // 止まっているバックエンドは 2 回続けて失敗して切り離される
+            for _ in 0..2 {
+                for e in hub.engines.values() {
+                    e.check_health().await;
+                }
+            }
+            hub.refresh_catalog("vv").await.unwrap();
+            hub.fill_credits("vv").await;
+            let base = serve(router(hub)).await;
+            Self { base, engine, http: reqwest::Client::new() }
+        }
+
+        async fn speech(&self, body: Value) -> reqwest::Response {
+            self.http.post(format!("{}/v1/speech", self.base)).json(&body).send().await.unwrap()
+        }
+
+        async fn get_json(&self, path: &str) -> Value {
+            let resp = self.http.get(format!("{}{path}", self.base)).send().await.unwrap();
+            assert_eq!(resp.status(), 200, "{path}");
+            resp.json().await.unwrap()
+        }
+    }
+
+    fn header_str<'a>(resp: &'a reqwest::Response, name: &str) -> &'a str {
+        resp.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default()
+    }
+
+    async fn error_code(resp: reqwest::Response) -> String {
+        let j: Value = resp.json().await.unwrap();
+        j["error"]["code"].as_str().unwrap_or_default().to_owned()
+    }
+
+    #[tokio::test]
+    async fn speech_returns_converted_pcm_with_voice_and_credit() {
+        let f = Fixture::start("").await;
+        let resp = f.speech(json!({ "text": "こんにちは", "voice": "zundamon" })).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "content-type"), "audio/pcm");
+        assert_eq!(header_str(&resp, "x-tts-pcm-sample-rate"), "48000");
+        assert_eq!(header_str(&resp, "x-tts-pcm-channels"), "2");
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:ずんだもん/ノーマル"));
+        assert_eq!(header_str(&resp, "x-tts-fallback"), "none");
+        assert_eq!(header_str(&resp, "x-tts-credit"), ext_value("VOICEVOX:ずんだもん"));
+        assert!(!header_str(&resp, "x-tts-request-id").is_empty());
+        // 24kHz モノラル 0.1 秒 → 48kHz ステレオ 16bit でおよそ 19200 バイト
+        let pcm = resp.bytes().await.unwrap();
+        assert_eq!(pcm.len() % 4, 0);
+        assert!((15_000..=24_000).contains(&pcm.len()), "{}", pcm.len());
+    }
+
+    #[tokio::test]
+    async fn speech_returns_wav_and_passes_params_to_the_engine() {
+        let f = Fixture::start("").await;
+        let resp = f
+            .speech(json!({ "text": "あ", "voice": "preset:早口めたん", "format": { "codec": "wav", "sample_rate": 16000, "channels": 1 } }))
+            .await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "content-type"), "audio/wav");
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:四国めたん/ノーマル"));
+        // クレジット表記のない話者には付けない
+        assert!(resp.headers().get("x-tts-credit").is_none());
+        let wav = resp.bytes().await.unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16000);
+        assert_eq!(f.engine.last_query.lock().unwrap().as_ref().unwrap()["speedScale"], 1.5);
+    }
+
+    #[tokio::test]
+    async fn speech_keeps_the_callers_request_id() {
+        let f = Fixture::start("").await;
+        let resp = f
+            .http
+            .post(format!("{}/v1/speech", f.base))
+            .header("x-request-id", "abc-123")
+            .json(&json!({ "text": "あ" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(header_str(&resp, "x-tts-request-id"), "abc-123");
+    }
+
+    #[tokio::test]
+    async fn speech_rejects_bad_requests() {
+        let f = Fixture::start("max_text_chars: 5\n").await;
+        let cases = [
+            (json!({ "text": "  " }), "empty_text"),
+            (json!({ "text": "あいうえおか" }), "text_too_long"),
+            (json!({ "text": "あ", "format": { "sample_rate": 1000 } }), "bad_format"),
+            (json!({ "text": "あ", "format": { "channels": 3 } }), "bad_format"),
+            (json!({ "text": "あ", "deadline_ms": 0 }), "bad_deadline"),
+            (json!({ "voice": "zundamon" }), "bad_request"),
+        ];
+        for (body, code) in cases {
+            let resp = f.speech(body.clone()).await;
+            assert_eq!(resp.status(), 400, "{body}");
+            assert_eq!(error_code(resp).await, code, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_voice_is_404_without_fallback_and_falls_back_otherwise() {
+        let f = Fixture::start("").await;
+        let resp = f.speech(json!({ "text": "あ", "voice": "vv:ずんだも", "fallback": "none" })).await;
+        assert_eq!(resp.status(), 404);
+        let j: Value = resp.json().await.unwrap();
+        assert_eq!(j["error"]["code"], "unknown_voice");
+        assert!(j["error"]["suggestions"].as_array().is_some_and(|s| !s.is_empty()), "{j}");
+
+        let resp = f.speech(json!({ "text": "あ", "voice": "vv:だれか" })).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "x-tts-fallback"), "unknown_voice");
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:ずんだもん/ノーマル"));
+    }
+
+    #[tokio::test]
+    async fn stopped_engine_falls_back_to_the_default_voice() {
+        let f = Fixture::start("").await;
+        let resp = f.speech(json!({ "text": "あ", "voice": "down:だれか" })).await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "x-tts-fallback"), "engine_unavailable");
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:ずんだもん/ノーマル"));
+    }
+
+    #[tokio::test]
+    async fn failing_engine_is_503() {
+        let f = Fixture::start("").await;
+        f.engine.fail_synthesis.store(true, Ordering::SeqCst);
+        let resp = f.speech(json!({ "text": "あ", "voice": "zundamon", "fallback": "none" })).await;
+        assert_eq!(resp.status(), 503);
+        assert_eq!(error_code(resp).await, "unavailable");
+    }
+
+    #[tokio::test]
+    async fn voices_lists_searches_and_pages() {
+        let f = Fixture::start("").await;
+        let all = f.get_json("/v1/voices").await;
+        let addresses: Vec<&str> = all["voices"].as_array().unwrap().iter().map(|v| v["address"].as_str().unwrap()).collect();
+        // 歌唱用のスタイルは出さない
+        assert!(addresses.contains(&"vv:ずんだもん/ノーマル"), "{addresses:?}");
+        assert!(addresses.contains(&"vv:四国めたん/ノーマル"), "{addresses:?}");
+        assert!(!addresses.iter().any(|a| a.contains("ハミング")), "{addresses:?}");
+
+        let hit = f.get_json("/v1/voices?q=%E3%82%81%E3%81%9F%E3%82%93&available=true").await;
+        let first = &hit["voices"][0];
+        assert_eq!(first["address"], "vv:四国めたん/ノーマル");
+        assert_eq!(first["kind"], "voice");
+        assert_eq!(first["available"], true);
+
+        let page = f.get_json("/v1/voices?limit=1").await;
+        assert_eq!(page["voices"].as_array().unwrap().len(), 1);
+        let next = page["next_cursor"].as_str().unwrap();
+        let page2 = f.get_json(&format!("/v1/voices?limit=1&cursor={next}")).await;
+        assert_ne!(page["voices"][0]["address"], page2["voices"][0]["address"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_follows_aliases() {
+        let f = Fixture::start("").await;
+        let r = f.get_json("/v1/voices/resolve?q=zundamon").await;
+        assert_eq!(r["voice"]["address"], "vv:ずんだもん/ノーマル");
+        assert_eq!(r["voice"]["available"], true);
+    }
+
+    #[tokio::test]
+    async fn admin_engines_reports_backend_state() {
+        let f = Fixture::start("").await;
+        let j = f.get_json("/admin/engines").await;
+        let engines = j["engines"].as_array().unwrap();
+        let by_name = |n: &str| engines.iter().find(|e| e["name"] == n).unwrap();
+        assert_eq!(by_name("vv")["available"], true);
+        assert_eq!(by_name("vv")["voices"], 2);
+        assert_eq!(by_name("down")["available"], false);
+    }
+
+    #[tokio::test]
+    async fn keys_are_required_once_clients_are_configured() {
+        std::env::set_var("TTSHUB_TEST_CLIENT_KEY", "client-secret");
+        std::env::set_var("TTSHUB_TEST_ADMIN_KEY", "admin-secret");
+        let f = Fixture::start(
+            "clients:\n  st: { key_env: TTSHUB_TEST_CLIENT_KEY, default_voice: vv:四国めたん }\nadmin_key_env: TTSHUB_TEST_ADMIN_KEY\n",
+        )
+        .await;
+        let url = |p: &str| format!("{}{p}", f.base);
+
+        // health だけは鍵なしで使える（コンテナのヘルスチェック用）
+        assert_eq!(f.http.get(url("/v1/health")).send().await.unwrap().status(), 200);
+        for key in [None, Some("wrong")] {
+            let mut req = f.http.get(url("/v1/voices"));
+            if let Some(k) = key {
+                req = req.bearer_auth(k);
+            }
+            let resp = req.send().await.unwrap();
+            assert_eq!(resp.status(), 401, "{key:?}");
+            assert_eq!(error_code(resp).await, "unauthorized");
+        }
+        assert_eq!(f.speech(json!({ "text": "あ" })).await.status(), 401);
+
+        // 利用者ごとのデフォルト話者を使う
+        let resp =
+            f.http.post(url("/v1/speech")).bearer_auth("client-secret").json(&json!({ "text": "あ" })).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:四国めたん/ノーマル"));
+
+        // 管理 API は利用者の鍵では使えない
+        let admin = |k: &str| f.http.get(url("/admin/engines")).bearer_auth(k.to_owned()).send();
+        assert_eq!(admin("client-secret").await.unwrap().status(), 401);
+        assert_eq!(admin("admin-secret").await.unwrap().status(), 200);
+    }
 }
