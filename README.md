@@ -26,7 +26,14 @@ docker compose --profile voicevox up -d   # ttshub と VOICEVOX を起動
 
 エンジンを別に動かしているなら profile は不要（`docker compose up -d`）。ebyroid も一緒に動かすなら `--profile ebyroid` を付ける（VOICEROID の用意が必要。[ebyroid の README](https://github.com/Ebycow/ebyroid) を参照）。
 
-ビルド済みのイメージを `ghcr.io/ebycow/ttshub`（amd64）で公開している。master に入るたびに、テストが通ったものを `latest` とコミット ID のタグで出す。設定ファイルを `/etc/ttshub/ttshub.yaml` にマウントし、`TTSHUB_CONFIG` でその場所を渡して使う（`compose.yaml` を参照）。
+イメージは GHCR に公開しているもの（`ghcr.io/ebycow/ttshub`、amd64）を使うので、ビルドは要らない。master に入るたびに、テストが通ったものを `latest` とコミット ID のタグで出している。
+
+```sh
+docker compose pull && docker compose up -d                                 # 新しい版にする
+TTSHUB_IMAGE=ghcr.io/ebycow/ttshub:<コミット ID> docker compose up -d       # 前の版に戻す（.env に書いてもよい）
+```
+
+手元のソースで動かすときは `docker compose up -d --build`。同じマシンで別に動かしている ttshub のイメージを上書きしないよう、開発用の複製では `.env` に `TTSHUB_IMAGE=ttshub:dev` と書いておく。
 
 ```sh
 # 合成（48kHz ステレオの PCM が返る）

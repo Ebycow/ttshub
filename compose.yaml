@@ -5,10 +5,14 @@
 #   docker compose --profile ebyroid up -d                   # ttshub + ebyroid（VOICEROID の用意が必要）
 #
 # 設定は ttshub.yaml（ttshub.example.yaml をコピーして作る）
+# 新しい版にするときは docker compose pull && docker compose up -d
 services:
   ttshub:
+    # 既定では GHCR に公開しているイメージを使う（docker compose pull で更新）。--build を付けると手元でビルドする
+    # 手元でビルドするときや前の版に戻すときは、.env の TTSHUB_IMAGE で使うイメージを指定する
+    # （例: 開発用の複製では ttshub:dev、戻すときは ghcr.io/ebycow/ttshub:<コミット ID>）
+    image: ${TTSHUB_IMAGE:-ghcr.io/ebycow/ttshub:latest}
     build: .
-    image: ttshub
     restart: unless-stopped
     logging:
       driver: json-file
