@@ -43,9 +43,15 @@ const SPEAKER_INFO_TIMEOUT: Duration = Duration::from_secs(60);
 struct Style {
     name: String,
     id: i64,
-    /// talk 以外（歌唱用の sing など）は読み上げに使えない
+    /// 読み上げに使えるのは talk と streaming_talk だけ（歌唱用の sing などは使えない）
     #[serde(default, rename = "type")]
     kind: Option<String>,
+}
+
+/// 読み上げに使えるスタイルか。type がない古いエンジンは talk とみなす。
+/// VOICEVOX 0.26 からは、読み上げのスタイルが streaming_talk として返る（/synthesis はそのまま使える）
+fn is_talk(kind: Option<&str>) -> bool {
+    matches!(kind, None | Some("talk") | Some("streaming_talk"))
 }
 
 #[async_trait]
@@ -70,7 +76,7 @@ impl EnginePlugin for Voicevox {
                 let character = sp.name;
                 sp.styles
                     .into_iter()
-                    .filter(|st| st.kind.as_deref().is_none_or(|k| k == "talk"))
+                    .filter(|st| is_talk(st.kind.as_deref()))
                     .map(move |st| VoiceEntry {
                         internal_id: st.id.to_string(),
                         character: character.clone(),
@@ -181,6 +187,16 @@ fn apply_params(query: &mut Value, params: &Params, prefix: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn talk_styles_include_streaming_talk() {
+        assert!(is_talk(None));
+        assert!(is_talk(Some("talk")));
+        assert!(is_talk(Some("streaming_talk")));
+        assert!(!is_talk(Some("sing")));
+        assert!(!is_talk(Some("singing_teacher")));
+        assert!(!is_talk(Some("frame_decode")));
+    }
 
     #[test]
     fn params_overwrite_audio_query_fields() {
