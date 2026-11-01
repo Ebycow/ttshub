@@ -155,17 +155,21 @@ pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
 
 /// 規約や説明の文面から、「VOICEVOX:ずんだもん」「AivisSpeech: まお」のような鉤括弧付きのクレジット表記を探す
 pub(crate) fn find_credit(text: &str) -> Option<String> {
-    text.split('「').skip(1).filter_map(|s| s.split_once('」')).map(|(inner, _)| inner.trim()).find(|inner| {
-        // 区切りの前が英数字で始まるブランド名（「※非公式です」などの鉤括弧は除く）
-        inner.split_once([':', '：']).is_some_and(|(brand, name)| {
-            let brand = brand.trim();
-            brand.starts_with(|c: char| c.is_ascii_alphanumeric())
-                && !brand.contains(char::is_whitespace)
-                && !name.trim().is_empty()
-                && !inner.contains('\n')
+    text.split('「')
+        .skip(1)
+        .filter_map(|s| s.split_once('」'))
+        .map(|(inner, _)| inner.trim())
+        .find(|inner| {
+            // 区切りの前が英数字で始まるブランド名（「※非公式です」などの鉤括弧は除く）
+            inner.split_once([':', '：']).is_some_and(|(brand, name)| {
+                let brand = brand.trim();
+                brand.starts_with(|c: char| c.is_ascii_alphanumeric())
+                    && !brand.contains(char::is_whitespace)
+                    && !name.trim().is_empty()
+                    && !inner.contains('\n')
+            })
         })
-    })
-    .map(str::to_owned)
+        .map(str::to_owned)
 }
 
 /// 文面の最後の URL（規約の文面は「詳細は以下をご確認ください」の後に URL を置くことが多い）

@@ -117,15 +117,7 @@ impl Hub {
         }
         let admin_key = config.admin_key_env.as_ref().and_then(|k| std::env::var(k).ok()).filter(|k| !k.is_empty());
         let order = config.engines.keys().cloned().collect();
-        Ok(Self {
-            config,
-            engines,
-            catalog: Catalog::default(),
-            order,
-            clients,
-            admin_key,
-            credits: RwLock::default(),
-        })
+        Ok(Self { config, engines, catalog: Catalog::default(), order, clients, admin_key, credits: RwLock::default() })
     }
 
     /// 鍵から利用者を特定する。利用者を設定していなければ誰でも使える（Ok(None)）
@@ -148,7 +140,8 @@ impl Hub {
             .map(|(k, v)| (k.clone(), v.clone()))
             .chain(self.config.presets.iter().map(|(k, v)| (format!("preset:{k}"), v.clone())))
             .map(|(name, target)| {
-                let group = self.voice_of(&target, None).map(|v| format!("{}:{}", v.engine, address::slug(&v.character)));
+                let group =
+                    self.voice_of(&target, None).map(|v| format!("{}:{}", v.engine, address::slug(&v.character)));
                 Named { name, target, group }
             })
             .collect()
@@ -168,9 +161,9 @@ impl Hub {
                         label: format!("{engine}:{speaker}"),
                     });
                 }
-                Target::Default => client
-                    .and_then(|c| c.default_voice.clone())
-                    .unwrap_or_else(|| self.config.default_voice.clone()),
+                Target::Default => {
+                    client.and_then(|c| c.default_voice.clone()).unwrap_or_else(|| self.config.default_voice.clone())
+                }
                 Target::Preset(name) => match self.config.presets.get(name) {
                     Some(t) => t.clone(),
                     None => return Ok(unknown(params, name)),
@@ -220,8 +213,9 @@ impl Hub {
         }
         if let Some(v) = &req.voice {
             // 対応はキャラ単位で見る。移った先に同じスタイルがあればそれを使う
-            let same_character =
-                |a: &Voice, b: &Voice| a.engine == b.engine && address::slug(&a.character) == address::slug(&b.character);
+            let same_character = |a: &Voice, b: &Voice| {
+                a.engine == b.engine && address::slug(&a.character) == address::slug(&b.character)
+            };
             for group in &self.config.equivalents {
                 let resolved: Vec<Voice> = group.iter().filter_map(|a| self.voice_of(a, client)).collect();
                 if !resolved.iter().any(|g| same_character(g, v)) {
@@ -454,10 +448,18 @@ mod tests {
             style: Some(s.into()),
             is_default: false,
         };
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
+        let eby =
+            |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
         for (name, entries) in [
             ("ebyroid", vec![eby("kiritan", true), eby("aoi", false)]),
-            ("voicevox", vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル"), vv("108", "東北きりたん", "ノーマル")]),
+            (
+                "voicevox",
+                vec![
+                    vv("2", "四国めたん", "ノーマル"),
+                    vv("3", "ずんだもん", "ノーマル"),
+                    vv("108", "東北きりたん", "ノーマル"),
+                ],
+            ),
             ("cloud", vec![vv("alloy", "alloy", "default")]),
         ] {
             hub.catalog.set(name, hub.build(name, entries));
@@ -490,7 +492,10 @@ presets:
         fn capabilities(&self) -> crate::engine::Capabilities {
             Default::default()
         }
-        async fn list_voices(&self, _: &crate::engine::BackendClient) -> Result<Vec<VoiceEntry>, crate::engine::EngineError> {
+        async fn list_voices(
+            &self,
+            _: &crate::engine::BackendClient,
+        ) -> Result<Vec<VoiceEntry>, crate::engine::EngineError> {
             Ok(vec![])
         }
         async fn synthesize(
@@ -662,7 +667,11 @@ presets:
     fn default_uses_client_then_global() {
         let h = hub(YAML);
         assert_eq!(h.expand("default", None).unwrap().voice.unwrap().address, "ebyroid:kiritan");
-        let c = ClientCtx { name: "st".into(), default_voice: Some("voicevox:四国めたん".into()), allow_billable_fallback: false };
+        let c = ClientCtx {
+            name: "st".into(),
+            default_voice: Some("voicevox:四国めたん".into()),
+            allow_billable_fallback: false,
+        };
         assert_eq!(h.expand("default", Some(&c)).unwrap().voice.unwrap().address, "voicevox:四国めたん/ノーマル");
     }
 
@@ -688,8 +697,18 @@ presets:
             h.build(
                 "cloud",
                 vec![
-                    VoiceEntry { internal_id: "a".into(), character: "alloy".into(), style: Some("default".into()), is_default: false },
-                    VoiceEntry { internal_id: "b".into(), character: "alloy".into(), style: Some("ノーマル".into()), is_default: false },
+                    VoiceEntry {
+                        internal_id: "a".into(),
+                        character: "alloy".into(),
+                        style: Some("default".into()),
+                        is_default: false,
+                    },
+                    VoiceEntry {
+                        internal_id: "b".into(),
+                        character: "alloy".into(),
+                        style: Some("ノーマル".into()),
+                        is_default: false,
+                    },
                 ],
             ),
         );
@@ -712,7 +731,10 @@ presets:
     fn billable_engines_are_only_used_when_requested_or_allowed() {
         let h = hub(&YAML.replace("default_voice: ebyroid:kiritan", "default_voice: cloud:alloy"));
         let req = h.expand("voicevox:四国めたん", None).unwrap();
-        assert_eq!(addresses(&h.candidates(&req, None, true)), vec!["voicevox:四国めたん/ノーマル", "voicevox:ずんだもん/ノーマル"]);
+        assert_eq!(
+            addresses(&h.candidates(&req, None, true)),
+            vec!["voicevox:四国めたん/ノーマル", "voicevox:ずんだもん/ノーマル"]
+        );
         let c = ClientCtx { name: "x".into(), default_voice: None, allow_billable_fallback: true };
         assert!(addresses(&h.candidates(&req, Some(&c), true)).contains(&"cloud:alloy/default"));
         let req = h.expand("cloud:alloy", None).unwrap();
@@ -721,7 +743,8 @@ presets:
 
     #[test]
     fn resolve_returns_canonical_address_for_aliases_but_keeps_presets() {
-        let h = hub(&YAML.replace("zundamon: voicevox:ずんだもん", "zundamon: voicevox:ずんだもん\n  きりたん: ebyroid:kiritan"));
+        let h = hub(&YAML
+            .replace("zundamon: voicevox:ずんだもん", "zundamon: voicevox:ずんだもん\n  きりたん: ebyroid:kiritan"));
         let (r, v) = h.resolve("きりたん");
         assert_eq!(r.matched.as_deref(), Some("ebyroid:kiritan"));
         assert_eq!(v.unwrap().address, "ebyroid:kiritan");

@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::{
-    body_stream, status_error, AudioBody, BackendClient, Capabilities, EngineError, EnginePlugin, PcmFormat,
-    VoiceEntry,
+    body_stream, status_error, AudioBody, BackendClient, Capabilities, EngineError, EnginePlugin, PcmFormat, VoiceEntry,
 };
 use crate::params::Params;
 

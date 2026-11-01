@@ -197,21 +197,14 @@ impl Catalog {
     }
 
     /// 検索。q が空なら全件。別名とプリセットも候補に含める
-    pub fn search(
-        &self,
-        order: &[String],
-        q: &str,
-        engine: Option<&str>,
-        extras: &[Named],
-    ) -> Vec<SearchHit> {
+    pub fn search(&self, order: &[String], q: &str, engine: Option<&str>, extras: &[Named]) -> Vec<SearchHit> {
         // 「aivis」「aivis:まお」のようにエンジン名で書かれていたら、そのエンジンに絞る
         let (named_engine, q) = split_engine(order, q);
         let engine = match (engine, named_engine) {
             (Some(a), Some(b)) if a != b => return vec![],
             (a, b) => a.or(b),
         };
-        let voices: Vec<Voice> =
-            self.all(order).into_iter().filter(|v| engine.is_none_or(|e| v.engine == e)).collect();
+        let voices: Vec<Voice> = self.all(order).into_iter().filter(|v| engine.is_none_or(|e| v.engine == e)).collect();
         let q = Query::new(q);
         if q.full.is_empty() {
             let mut hits: Vec<SearchHit> = voices.into_iter().map(SearchHit::Voice).collect();
@@ -258,20 +251,15 @@ impl Catalog {
                 return Resolution { matched: Some(v.address), confidence: 1.0, suggestions: vec![] };
             }
         }
-        let voices: Vec<Voice> =
-            self.all(order).into_iter().filter(|v| engine.is_none_or(|e| v.engine == e)).collect();
+        let voices: Vec<Voice> = self.all(order).into_iter().filter(|v| engine.is_none_or(|e| v.engine == e)).collect();
         let extras: &[Named] = if engine.is_some() { &[] } else { extras };
         let cands = candidates(&voices, extras);
         let q = Query::new(body);
         let mut scored: Vec<(f64, &Candidate)> = cands.iter().map(|c| (score(&q, c), c)).collect();
         scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.char_default.cmp(&a.1.char_default)));
 
-        let suggestions: Vec<String> = scored
-            .iter()
-            .filter(|(s, _)| *s >= 0.4)
-            .take(5)
-            .map(|(_, c)| c.address.to_owned())
-            .collect();
+        let suggestions: Vec<String> =
+            scored.iter().filter(|(s, _)| *s >= 0.4).take(5).map(|(_, c)| c.address.to_owned()).collect();
         let Some(&(top, best)) = scored.first() else {
             return Resolution { matched: None, confidence: 0.0, suggestions };
         };
@@ -294,10 +282,15 @@ pub struct Named {
 }
 
 /// 検索結果の 1 件
+// 検索結果として一時的に持つだけなので、Box にせずそのまま持つ
+#[allow(clippy::large_enum_variant)]
 pub enum SearchHit {
     Voice(Voice),
     /// 別名またはプリセット（名前, 指す先）
-    Named { name: String, target: String },
+    Named {
+        name: String,
+        target: String,
+    },
 }
 
 fn candidates<'a>(voices: &'a [Voice], extras: &'a [Named]) -> Vec<Candidate<'a>> {
@@ -435,7 +428,10 @@ mod tests {
         pairs
             .iter()
             .map(|(c, credit)| {
-                (slug(c), Credit { credit: Some((*credit).into()), terms_url: Some(format!("https://example.com/{c}")) })
+                (
+                    slug(c),
+                    Credit { credit: Some((*credit).into()), terms_url: Some(format!("https://example.com/{c}")) },
+                )
             })
             .collect()
     }
@@ -462,7 +458,8 @@ mod tests {
                 &declared(&[("ずんだもん", "VOICEVOX:ずんだもん"), ("四国めたん", "VOICEVOX:四国めたん")]),
             ),
         );
-        let eby = |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
+        let eby =
+            |n: &str, d: bool| VoiceEntry { internal_id: n.into(), character: n.into(), style: None, is_default: d };
         cat.set(
             "ebyroid",
             EngineVoices::build(
@@ -514,13 +511,23 @@ mod tests {
         let (cat, _) = catalog();
         assert_eq!(cat.engine_default("ebyroid").unwrap().address, "ebyroid:kiritan");
         assert_eq!(cat.engine_default("voicevox").unwrap().address, "voicevox:四国めたん/ノーマル");
-        let ev = EngineVoices::build("voicevox", &config(Some("ずんだもん")), vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル")], &HashMap::new());
+        let ev = EngineVoices::build(
+            "voicevox",
+            &config(Some("ずんだもん")),
+            vec![vv("2", "四国めたん", "ノーマル"), vv("3", "ずんだもん", "ノーマル")],
+            &HashMap::new(),
+        );
         assert_eq!(ev.voices[ev.default.unwrap()].address, "voicevox:ずんだもん/ノーマル");
     }
 
     #[test]
     fn duplicated_slugs_are_excluded() {
-        let ev = EngineVoices::build("v", &config(None), vec![vv("1", "A B", "x"), vv("2", "AB", "x"), vv("3", "C", "x")], &HashMap::new());
+        let ev = EngineVoices::build(
+            "v",
+            &config(None),
+            vec![vv("1", "A B", "x"), vv("2", "AB", "x"), vv("3", "C", "x")],
+            &HashMap::new(),
+        );
         assert_eq!(ev.len(), 1);
     }
 
@@ -544,7 +551,10 @@ mod tests {
     fn ambiguous_or_unknown_queries_return_suggestions_only() {
         let (cat, order) = catalog();
         // 「もん」はずんだもんにもあんこもんにも含まれる
-        cat.set("v2", EngineVoices::build("v2", &config(None), vec![vv("9", "あんこもん", "ノーマル")], &HashMap::new()));
+        cat.set(
+            "v2",
+            EngineVoices::build("v2", &config(None), vec![vv("9", "あんこもん", "ノーマル")], &HashMap::new()),
+        );
         let order2 = vec!["ebyroid".to_string(), "voicevox".to_string(), "v2".to_string()];
         let r = cat.resolve(&order2, "もん", &[]);
         assert_eq!(r.matched, None);
@@ -556,7 +566,11 @@ mod tests {
     #[test]
     fn resolves_aliases_and_presets() {
         let (cat, order) = catalog();
-        let named = |name: &str, target: &str, group: &str| Named { name: name.into(), target: target.into(), group: Some(group.into()) };
+        let named = |name: &str, target: &str, group: &str| Named {
+            name: name.into(),
+            target: target.into(),
+            group: Some(group.into()),
+        };
         let extras = vec![
             named("zundamon", "voicevox:ずんだもん", "voicevox:ずんだもん"),
             named("preset:早口ずんだもん", "voicevox:ずんだもん?speed=1.4", "voicevox:ずんだもん"),
@@ -564,7 +578,10 @@ mod tests {
         ];
         assert_eq!(cat.resolve(&order, "zundamon", &extras).matched.as_deref(), Some("zundamon"));
         assert_eq!(cat.resolve(&order, "早口ずんだもん", &extras).matched.as_deref(), Some("preset:早口ずんだもん"));
-        assert_eq!(cat.resolve(&order, "preset:早口ずんだもん", &extras).matched.as_deref(), Some("preset:早口ずんだもん"));
+        assert_eq!(
+            cat.resolve(&order, "preset:早口ずんだもん", &extras).matched.as_deref(),
+            Some("preset:早口ずんだもん")
+        );
         // 別名と同じ話者は競合とみなさない
         assert_eq!(cat.resolve(&order, "kiritan", &extras).matched.as_deref(), Some("kiritan"));
     }

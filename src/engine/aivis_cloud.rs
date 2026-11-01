@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use super::{
-    body_stream, find_credit, status_error, AudioBody, BackendClient, Capabilities, Credit, EngineError,
-    EnginePlugin, VoiceEntry,
+    body_stream, find_credit, status_error, AudioBody, BackendClient, Capabilities, Credit, EngineError, EnginePlugin,
+    VoiceEntry,
 };
 use crate::params::Params;
 
