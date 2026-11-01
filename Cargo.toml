@@ -6,7 +6,7 @@ description = "複数の TTS エンジンを束ねる音声合成ゲートウェ
 
 [dependencies]
 async-trait = "0.1"
-axum = "0.7"
+axum = "0.8"
 bytes = "1"
 form_urlencoded = "1"
 futures = "0.3"
