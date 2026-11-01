@@ -124,3 +124,4 @@ docker run --rm -v "$PWD":/src -w /src \
 
 テストは実際のエンジンを使わない。API のテスト（`src/api.rs`）は偽の VOICEVOX をテストの中で立て、HTTP で通しで確かめる。
 GitHub Actions でも push と pull request のたびに同じテストを回す（`.github/workflows/ci.yml`）。
+あわせて `cargo fmt` と `cargo clippy` も確かめる。`cargo audit` は依存を変えたときと毎週月曜の朝に回す（`.github/workflows/audit.yml`）。

@@ -269,6 +269,8 @@ fn append(out: &mut [Vec<f32>], res: Vec<Vec<f32>>) {
 }
 
 /// リサンプル後のフレームを s16le のインターリーブにする。モノラルから増やすときは複製する
+// i はチャンネル内の位置で、frames そのものの添字ではない（clippy の提案どおりにすると意味が変わる）
+#[allow(clippy::needless_range_loop)]
 fn encode(frames: &[Vec<f32>], out_channels: usize, gain: f32) -> Bytes {
     let n = frames.first().map_or(0, Vec::len);
     let mut b = BytesMut::with_capacity(n * out_channels * 2);
@@ -295,7 +297,9 @@ impl SilenceTrimmer {
     fn push(&mut self, data: &[u8]) -> Bytes {
         let end = data
             .chunks_exact(self.frame)
-            .rposition(|f| f.chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs() > SILENCE_THRESHOLD as u16))
+            .rposition(|f| {
+                f.as_chunks::<2>().0.iter().any(|s| i16::from_le_bytes(*s).unsigned_abs() > SILENCE_THRESHOLD as u16)
+            })
             .map(|i| (i + 1) * self.frame);
         match end {
             Some(end) => {
@@ -396,7 +400,11 @@ mod tests {
         let s = (rate as f32 * silence_secs) as usize;
         let mut pcm = Vec::new();
         for i in 0..n + s {
-            let v = if i < n { ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 12000.0) as i16 } else { 0 };
+            let v = if i < n {
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 12000.0) as i16
+            } else {
+                0
+            };
             for _ in 0..channels {
                 pcm.extend_from_slice(&v.to_le_bytes());
             }
@@ -456,7 +464,7 @@ mod tests {
         let frames = (out.len() - 44) / 2;
         assert!((23_500..=24_100).contains(&frames), "frames={frames}");
         // 音量 0.5 倍で振幅は 6000 前後になる
-        let peak = out[44..].chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs()).max().unwrap();
+        let peak = out[44..].as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s).unsigned_abs()).max().unwrap();
         assert!((5_500..=6_500).contains(&peak), "peak={peak}");
     }
 

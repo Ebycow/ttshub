@@ -633,7 +633,8 @@ presets:
     async fn voices_lists_searches_and_pages() {
         let f = Fixture::start("").await;
         let all = f.get_json("/v1/voices").await;
-        let addresses: Vec<&str> = all["voices"].as_array().unwrap().iter().map(|v| v["address"].as_str().unwrap()).collect();
+        let addresses: Vec<&str> =
+            all["voices"].as_array().unwrap().iter().map(|v| v["address"].as_str().unwrap()).collect();
         // 歌唱用のスタイルは出さない
         assert!(addresses.contains(&"vv:ずんだもん/ノーマル"), "{addresses:?}");
         assert!(addresses.contains(&"vv:四国めたん/ノーマル"), "{addresses:?}");
@@ -695,8 +696,14 @@ presets:
         assert_eq!(f.speech(json!({ "text": "あ" })).await.status(), 401);
 
         // 利用者ごとのデフォルト話者を使う
-        let resp =
-            f.http.post(url("/v1/speech")).bearer_auth("client-secret").json(&json!({ "text": "あ" })).send().await.unwrap();
+        let resp = f
+            .http
+            .post(url("/v1/speech"))
+            .bearer_auth("client-secret")
+            .json(&json!({ "text": "あ" }))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(resp.status(), 200);
         assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("vv:四国めたん/ノーマル"));
 

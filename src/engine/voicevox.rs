@@ -13,8 +13,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    body_stream, find_credit, find_last_url, status_error, AudioBody, BackendClient, Capabilities, Credit,
-    EngineError, EnginePlugin, VoiceEntry,
+    body_stream, find_credit, find_last_url, status_error, AudioBody, BackendClient, Capabilities, Credit, EngineError,
+    EnginePlugin, VoiceEntry,
 };
 use crate::params::Params;
 
@@ -74,15 +74,12 @@ impl EnginePlugin for Voicevox {
             .into_iter()
             .flat_map(|sp| {
                 let character = sp.name;
-                sp.styles
-                    .into_iter()
-                    .filter(|st| is_talk(st.kind.as_deref()))
-                    .map(move |st| VoiceEntry {
-                        internal_id: st.id.to_string(),
-                        character: character.clone(),
-                        style: Some(st.name),
-                        is_default: false,
-                    })
+                sp.styles.into_iter().filter(|st| is_talk(st.kind.as_deref())).map(move |st| VoiceEntry {
+                    internal_id: st.id.to_string(),
+                    character: character.clone(),
+                    style: Some(st.name),
+                    is_default: false,
+                })
             })
             .collect())
     }
@@ -95,12 +92,8 @@ impl EnginePlugin for Voicevox {
         params: &Params,
     ) -> Result<AudioBody, EngineError> {
         let id = voice.internal_id.as_str();
-        let resp = backend
-            .http
-            .post(backend.url("/audio_query"))
-            .query(&[("text", text), ("speaker", id)])
-            .send()
-            .await?;
+        let resp =
+            backend.http.post(backend.url("/audio_query")).query(&[("text", text), ("speaker", id)]).send().await?;
         if !resp.status().is_success() {
             return Err(status_error(resp.status(), "audio_query"));
         }
@@ -130,7 +123,9 @@ impl EnginePlugin for Voicevox {
         let speakers: Vec<Speaker> = resp.json().await?;
         let wanted = speakers.into_iter().filter(|sp| characters.contains(&sp.name) && !sp.speaker_uuid.is_empty());
         Ok(futures::stream::iter(wanted)
-            .map(|sp| async move { fetch_policy(backend, &sp.speaker_uuid).await.map(|p| (sp.name, credit_from_policy(&p))) })
+            .map(|sp| async move {
+                fetch_policy(backend, &sp.speaker_uuid).await.map(|p| (sp.name, credit_from_policy(&p)))
+            })
             .buffer_unordered(CREDIT_FETCH_CONCURRENCY)
             .filter_map(|r| async move { r })
             .collect()

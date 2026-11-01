@@ -87,7 +87,12 @@ impl Engine {
         Ok(Self::with_plugin(name, config, http, plugin))
     }
 
-    pub(crate) fn with_plugin(name: &str, config: EngineConfig, http: reqwest::Client, plugin: Arc<dyn EnginePlugin>) -> Self {
+    pub(crate) fn with_plugin(
+        name: &str,
+        config: EngineConfig,
+        http: reqwest::Client,
+        plugin: Arc<dyn EnginePlugin>,
+    ) -> Self {
         let api_key = match &config.api_key_env {
             Some(env) => match std::env::var(env) {
                 Ok(k) if !k.is_empty() => Some(k),
@@ -204,7 +209,8 @@ impl Engine {
                     continue;
                 }
             };
-            match received.unwrap_or_else(|_| Err(EngineError::Unavailable("合成のタスクが異常終了した".into()))) {
+            match received.unwrap_or_else(|_| Err(EngineError::Unavailable("合成のタスクが異常終了した".into())))
+            {
                 Ok(body) => {
                     b.mark_ok();
                     return Ok((body, b.url.clone(), i > 0));
