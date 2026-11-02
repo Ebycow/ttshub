@@ -146,6 +146,10 @@ impl Engine {
         Duration::from_millis(self.config.response_start_ms.unwrap_or(t.response_start_ms))
     }
 
+    pub fn health_interval(&self, t: &Timeouts) -> Duration {
+        Duration::from_millis(self.config.health_interval_ms.unwrap_or(t.health_interval_ms))
+    }
+
     /// 合成する。接続できない・時間切れなどのときは同じエンジンの別のバックエンドで再試行する。
     /// `until` があれば、空き待ちも応答開始の待ちもその時刻で打ち切る（利用者が待てる時間）。
     /// 戻り値: (音声, 使ったバックエンド, 最初に試したバックエンドから切り替えたか)
@@ -422,6 +426,18 @@ mod tests {
 
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    #[test]
+    fn health_interval_can_be_set_per_engine() {
+        let engine = |extra: &str| {
+            let yaml = format!("plugin: voicevox-compatible\nbackends: [http://x]\n{extra}");
+            let config: EngineConfig = serde_yaml::from_str(&yaml).unwrap();
+            Engine::new("e", config, reqwest::Client::new()).unwrap()
+        };
+        let t = Timeouts::default();
+        assert_eq!(engine("").health_interval(&t), Duration::from_secs(10));
+        assert_eq!(engine("health_interval_ms: 60000\n").health_interval(&t), Duration::from_secs(60));
     }
 
     #[tokio::test]
