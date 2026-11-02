@@ -48,6 +48,8 @@ engines:
   #   backends: [https://api.aivis-project.com]
   #   api_key_env: AIVIS_API_KEY
   #   billable: true
+  #   # 外部の API なので、ヘルスチェックは LAN 内のエンジンより間隔を空ける
+  #   health_interval_ms: 60000
   #   models:
   #     - a59cb814-0083-4369-8542-f51a29e72af7   # まお（AivisHub のモデル UUID）
 

@@ -80,25 +80,26 @@ async fn check_health(hub: &Hub) {
 }
 
 fn spawn_background(hub: Arc<Hub>) {
-    let h = hub.clone();
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(h.config.timeouts.health_interval_ms));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            check_health(&h).await;
-            // カタログがまだ取れていないエンジンが応答するようになったら、すぐ取る
-            for (name, engine) in &h.engines {
-                if h.catalog.engine(name).is_none() && engine.is_available() {
-                    if let Ok(n) = h.refresh_catalog(name).await {
+    // ヘルスチェックの間隔はエンジンごとに違うので、エンジンごとに回す
+    for (name, engine) in hub.engines.clone() {
+        let h = hub.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(engine.health_interval(&h.config.timeouts));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                engine.check_health().await;
+                // カタログがまだ取れていないエンジンが応答するようになったら、すぐ取る
+                if h.catalog.engine(&name).is_none() && engine.is_available() {
+                    if let Ok(n) = h.refresh_catalog(&name).await {
                         tracing::info!(engine = %name, voices = n, "カタログを取得");
                         let (h, name) = (h.clone(), name.clone());
                         tokio::spawn(async move { h.fill_credits(&name).await });
                     }
                 }
             }
-        }
-    });
+        });
+    }
     tokio::spawn(async move {
         let period = Duration::from_secs(hub.config.timeouts.catalog_refresh_secs);
         let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);

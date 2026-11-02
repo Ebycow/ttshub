@@ -70,6 +70,9 @@ pub struct EngineConfig {
     /// 応答開始までの上限をこのエンジンだけ変える。一括で返すエンジン（VOICEVOX）は長文だと時間がかかる
     #[serde(default)]
     pub response_start_ms: Option<u64>,
+    /// ヘルスチェックの間隔をこのエンジンだけ変える。外部の API は LAN 内のエンジンと同じ頻度で問い合わせない
+    #[serde(default)]
+    pub health_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
