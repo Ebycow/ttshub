@@ -13,6 +13,10 @@ pub struct Config {
     pub listen: String,
     /// 全体のデフォルト話者（アドレス）
     pub default_voice: String,
+    /// 最後の代わりの声（アドレス）。ほかの候補がすべて使えないときに試す。
+    /// 声を指定しなかったときの声（default_voice）とは別に、止まりにくいエンジンの声を置く
+    #[serde(default)]
+    pub fallback_voice: Option<String>,
     /// 論理エンジン。記述順がカタログの並び順になる
     pub engines: IndexMap<String, EngineConfig>,
     /// 同じキャラの別エンジンでの対応（フォールバックに使う）

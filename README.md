@@ -68,6 +68,7 @@ curl -X POST localhost:8790/v1/speech -H 'Content-Type: application/json' \
 - 手持ちの `*.htsvoice` は、`/usr/share/hts-voice/<キャラ名>/` の下に置くと話者に加わる。`<キャラ名>_<スタイル名>.htsvoice` という名前ならスタイルとして並ぶ
 - パラメータ: `speed`、`pitch`、`volume` が効く。`intonation` は効かない（Mei と Takumi の声は抑揚の調整に使う情報を持たない）。
   open_jtalk のオプション（`a`, `b`, `r`, `fm`, `u`, `jm`, `jf`, `g`）は `x-openjtalk-a=0.6` のように直接渡せる
+- ネットワークの先のエンジンと違って止まりにくいので、`fallback_voice: openjtalk:mei` にして最後の代わりの声にするとよい
 - イメージの外で動かすときは、open_jtalk・辞書・声の場所を環境変数 `OPENJTALK_BIN`、`OPENJTALK_DIC`、`OPENJTALK_VOICE_DIR` で指定する
 
 ## アドレス
@@ -112,7 +113,8 @@ default                                             利用者ごと、または�
 
 | 項目 | 内容 |
 |---|---|
-| `default_voice` | 全体のデフォルト話者 |
+| `default_voice` | 全体のデフォルト話者。声を指定しなかったときの声で、代わりの声の候補にもなる |
+| `fallback_voice` | 最後の代わりの声。ほかの候補（要求した声、`equivalents`、エンジン・利用者・全体のデフォルト）がすべて使えないときに試す。止まりにくいエンジン（ttshub の中で動く `openjtalk` など）の声を置く。課金のあるエンジンの声は、`allow_billable_fallback` の利用者にしか使わない |
 | `engines.<名前>.plugin` | プラグインの種類 |
 | `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける（`openjtalk` では書かない） |
 | `engines.<名前>.balance` | `round_robin`（既定）/ `least_connections` / `primary_backup` |

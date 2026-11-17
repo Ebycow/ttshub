@@ -4,6 +4,10 @@
 # 全体のデフォルト話者
 default_voice: voicevox:ずんだもん
 
+# 最後の代わりの声。ほかの候補がすべて使えないときに試す（声を指定しなかったときの声は default_voice）
+# ttshub の中で動いて止まりにくい Open JTalk を置くとよい（下の openjtalk のコメントも外す）
+# fallback_voice: openjtalk:mei
+
 engines:
   # compose の voicevox プロファイルで動かす VOICEVOX
   voicevox:
