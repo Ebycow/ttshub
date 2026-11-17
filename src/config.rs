@@ -42,10 +42,12 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
-    /// プラグインの種類（ebyroid, voicevox-compatible）
+    /// プラグインの種類（ebyroid, voicevox-compatible, aivis-cloud, openjtalk）
     pub plugin: String,
     #[serde(default)]
     pub balance: Balance,
+    /// エンジンの URL。コンテナの中で動かすエンジン（openjtalk）では書かない
+    #[serde(default)]
     pub backends: Vec<String>,
     #[serde(default = "default_max_concurrency")]
     pub max_concurrency_per_backend: usize,
@@ -123,6 +125,9 @@ impl Default for Timeouts {
     }
 }
 
+/// ttshub のコンテナの中で動かすエンジンのプラグイン
+const LOCAL_PLUGIN: &str = "openjtalk";
+
 fn default_listen() -> String {
     "0.0.0.0:8790".into()
 }
@@ -152,9 +157,25 @@ pub enum ConfigError {
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Read(path.to_owned(), e))?;
-        let config: Config = serde_yaml::from_str(&text)?;
+        let mut config: Config = serde_yaml::from_str(&text)?;
+        config.fill_local_backends()?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// ttshub のコンテナの中で動かすエンジン（openjtalk）は、`local` という 1 台のバックエンドとして扱う
+    fn fill_local_backends(&mut self) -> Result<(), ConfigError> {
+        for (name, engine) in &mut self.engines {
+            if engine.plugin == LOCAL_PLUGIN {
+                if !engine.backends.is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "エンジン {name} は ttshub の中で動くので、backends は書かない"
+                    )));
+                }
+                engine.backends = vec!["local".into()];
+            }
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -173,5 +194,25 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(engines: &str) -> Result<Config, ConfigError> {
+        let mut config: Config = serde_yaml::from_str(&format!("default_voice: x\nengines:\n{engines}")).unwrap();
+        config.fill_local_backends()?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    #[test]
+    fn openjtalk_runs_inside_without_backends() {
+        let config = parse("  ojt: { plugin: openjtalk }\n").unwrap();
+        assert_eq!(config.engines["ojt"].backends, vec!["local"]);
+        assert!(parse("  ojt: { plugin: openjtalk, backends: [http://x] }\n").is_err());
+        assert!(parse("  vv: { plugin: voicevox-compatible }\n").is_err());
     }
 }

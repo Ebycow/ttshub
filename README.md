@@ -14,6 +14,7 @@
 | `voicevox-compatible` | VOICEVOX、AivisSpeech などの VOICEVOX 互換エンジン |
 | `ebyroid` | [ebyroid](https://github.com/Ebycow/ebyroid)（VOICEROID+ / VOICEROID2） |
 | `aivis-cloud` | [Aivis Cloud API](https://api.aivis-project.com/v1/docs)（従量課金。使うモデルを `models` に UUID で並べる） |
+| `openjtalk` | [Open JTalk](https://open-jtalk.sourceforge.net/)（ttshub のイメージに入っていて、ttshub の中で動く。下の「Open JTalk」を参照） |
 
 VOICEVOX 互換のエンジンは、コードを変えずに設定ファイルに書き足すだけで使える。
 
@@ -24,7 +25,7 @@ cp ttshub.example.yaml ttshub.yaml        # 設定を作る
 docker compose --profile voicevox up -d   # ttshub と VOICEVOX を起動
 ```
 
-エンジンを別に動かしているなら profile は不要（`docker compose up -d`）。ebyroid も一緒に動かすなら `--profile ebyroid` を付ける（VOICEROID の用意が必要。[ebyroid の README](https://github.com/Ebycow/ebyroid) を参照）。
+エンジンを別に動かしているなら profile は不要（`docker compose up -d`）。ebyroid も一緒に動かすなら `--profile ebyroid` を付ける（VOICEROID の用意が必要。[ebyroid の README](https://github.com/Ebycow/ebyroid) を参照）。Open JTalk は ttshub の中で動くので profile は要らない。
 
 イメージは GHCR に公開しているもの（`ghcr.io/ebycow/ttshub`、amd64 と arm64）を使うので、ビルドは要らない。master に入るたびに、テストが通ったものを `latest` とコミット ID のタグで出している。
 
@@ -48,6 +49,26 @@ curl -X POST localhost:8790/v1/speech -H 'Content-Type: application/json' \
 curl -G localhost:8790/v1/voices --data-urlencode q=ずんだ
 curl -G localhost:8790/v1/voices/resolve --data-urlencode 'q=ずんだもん あまあま'
 ```
+
+## Open JTalk
+
+VOICEROID のライセンスがなく、VOICEVOX も重すぎる環境（Raspberry Pi など）向けの、軽いエンジン。
+音質は昔ながらの合成音声だが、辞書と声を合わせて 130MB ほどで、GPU も要らない。1 文の合成は Apple Silicon の Mac で 0.1〜0.2 秒ほど（Raspberry Pi では未計測）。
+
+```sh
+docker compose up -d   # ttshub.yaml の openjtalk の例のコメントを外しておく
+curl -X POST localhost:8790/v1/speech -H 'Content-Type: application/json' \
+  -d '{"text": "こんにちは", "voice": "openjtalk:mei/happy", "format": {"codec": "wav"}}' -o out.wav
+```
+
+- ttshub のイメージに open_jtalk と辞書と声が入っていて、ttshub が open_jtalk コマンドを直接呼ぶ。別のエンジンを動かす必要はなく、`backends` も書かない。
+  文ごとに合成して、できた文から順に返すので、長文でも最初の音声はすぐ届く。同時合成数（`max_concurrency_per_backend`）が、同時に動かす open_jtalk の数になる
+- 声: `mei`（normal / angry / bashful / happy / sad）、`takumi`（normal / angry / happy / sad）、`nitech-jp-atr503-m001`。
+  Mei と Takumi は名古屋工業大学の [MMDAgent](https://www.mmdagent.jp/) の声で CC BY 3.0 なので、クレジット表記が要る（設定例の `credits`）
+- 手持ちの `*.htsvoice` は、`/usr/share/hts-voice/<キャラ名>/` の下に置くと話者に加わる。`<キャラ名>_<スタイル名>.htsvoice` という名前ならスタイルとして並ぶ
+- パラメータ: `speed`、`pitch`、`volume` が効く。`intonation` は効かない（Mei と Takumi の声は抑揚の調整に使う情報を持たない）。
+  open_jtalk のオプション（`a`, `b`, `r`, `fm`, `u`, `jm`, `jf`, `g`）は `x-openjtalk-a=0.6` のように直接渡せる
+- イメージの外で動かすときは、open_jtalk・辞書・声の場所を環境変数 `OPENJTALK_BIN`、`OPENJTALK_DIC`、`OPENJTALK_VOICE_DIR` で指定する
 
 ## アドレス
 
@@ -93,7 +114,7 @@ default                                             利用者ごと、または�
 |---|---|
 | `default_voice` | 全体のデフォルト話者 |
 | `engines.<名前>.plugin` | プラグインの種類 |
-| `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける |
+| `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける（`openjtalk` では書かない） |
 | `engines.<名前>.balance` | `round_robin`（既定）/ `least_connections` / `primary_backup` |
 | `engines.<名前>.max_concurrency_per_backend` | バックエンドごとの同時合成数（既定 3）。1 件ずつしか合成しないエンジン（VOICEVOX など）は 1 にする。多くしてもエンジンの中で順番を待つだけで、ttshub から待ちが見えなくなる |
 | `engines.<名前>.credits` | キャラ名 → クレジット表記。エンジンが申告する表記より優先する。申告のないエンジン（ebyroid）や、規約が表記を指定しないキャラに書く |
