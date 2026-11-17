@@ -22,7 +22,9 @@ RUN curl -fsSLo /tmp/mmdagent.zip https://sourceforge.net/projects/mmdagent/file
 
 FROM debian:bookworm-slim
 # openjtalk プラグインが使う open_jtalk と辞書（/var/lib/mecab/dic/open-jtalk/naist-jdic）と声（/usr/share/hts-voice）
-RUN apt-get update \
+# hts-voice-nitech-jp-atr503-m001 は contrib にあるので、contrib も有効にする
+RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
  && apt-get install -y --no-install-recommends open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=hts-voices /voices/ /usr/share/hts-voice/
