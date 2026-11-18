@@ -3,10 +3,12 @@ FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# ワークスペースの仲間（Open JTalk のサーバー）。ここではビルドしないが、ワークスペースを読むのに要る
+COPY openjtalk ./openjtalk
 # 依存とビルド成果物はビルドキャッシュに置き、イメージには残さない
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked && cp target/release/ttshub /ttshub
+    cargo build --release --locked -p ttshub && cp target/release/ttshub /ttshub
 
 FROM debian:bookworm-slim
 COPY --from=build /ttshub /usr/local/bin/ttshub

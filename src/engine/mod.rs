@@ -2,6 +2,7 @@
 
 mod aivis_cloud;
 mod ebyroid;
+mod openjtalk;
 mod voicevox;
 
 use std::collections::HashMap;
@@ -143,6 +144,7 @@ pub fn create(config: &EngineConfig) -> Result<Arc<dyn EnginePlugin>, String> {
     match config.plugin.as_str() {
         "ebyroid" => Ok(Arc::new(ebyroid::Ebyroid)),
         "voicevox-compatible" => Ok(Arc::new(voicevox::Voicevox)),
+        "openjtalk" => Ok(Arc::new(openjtalk::OpenJTalk)),
         "aivis-cloud" => {
             if config.models.is_empty() {
                 return Err("aivis-cloud には models（使うモデルの UUID）が必要".into());
