@@ -23,6 +23,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
 
+[dev-dependencies]
+# openjtalk プラグインのテストで、本物の Open JTalk のサーバー（偽の open_jtalk を呼ぶ）を立てる
+ttshub-openjtalk = { path = "openjtalk", features = ["testing"] }
+
+# ttshub と、一緒に配るエンジンのサーバー
+[workspace]
+members = ["openjtalk"]
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

@@ -5,8 +5,9 @@
 default_voice: voicevox:ずんだもん
 
 # 最後の代わりの声。ほかの候補がすべて使えないときに試す（声を指定しなかったときの声は default_voice）
-# 普段の声とは別に、止まりにくいエンジン（同じマシンで動かす軽いエンジンなど）の声を置く
-# fallback_voice: <エンジン>:<キャラ>[/<スタイル>]
+# 普段の声とは別に、止まりにくいエンジン（同じマシンで動かす軽いエンジンなど）の声を置く。
+# たとえば Open JTalk（下の openjtalk のコメントも外す）
+# fallback_voice: openjtalk:mei
 
 engines:
   # compose の voicevox プロファイルで動かす VOICEVOX
@@ -39,6 +40,21 @@ engines:
   #   credits:
   #     kiritan: "VOICEROID+ 東北きりたん EX"
   #   terms_url: https://www.ah-soft.com/commercial/voiceroid/private/
+
+  # compose の openjtalk プロファイルで動かす Open JTalk（軽いので Raspberry Pi でも動く）
+  # 話者は openjtalk:mei/happy のように指定する（mei, takumi, nitech-jp-atr503-m001）
+  # openjtalk:
+  #   plugin: openjtalk
+  #   backends:
+  #     - http://openjtalk:8791
+  #   # 1 件の合成は CPU 1 つで動く。Open JTalk のサーバーの CPU の数まで同時に合成できる
+  #   max_concurrency_per_backend: 4
+  #   # Mei と Takumi は CC BY 3.0 なので、クレジット表記が要る
+  #   credits:
+  #     mei: "HTS Voice \"Mei\" (c) Nagoya Institute of Technology (CC BY 3.0)"
+  #     takumi: "HTS Voice \"Takumi\" (c) Nagoya Institute of Technology (CC BY 3.0)"
+  #   terms_url: https://creativecommons.org/licenses/by/3.0/deed.ja
+  #   default_voice: mei/normal
 
   # VOICEVOX 互換のエンジン（AivisSpeech など）は plugin を voicevox-compatible にして足す
   # aivis:

@@ -46,7 +46,7 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EngineConfig {
-    /// プラグインの種類（ebyroid, voicevox-compatible）
+    /// プラグインの種類（ebyroid, voicevox-compatible, aivis-cloud, openjtalk）
     pub plugin: String,
     #[serde(default)]
     pub balance: Balance,

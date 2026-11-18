@@ -3,6 +3,7 @@
 #   docker compose up -d                                     # ttshub だけ（エンジンは別に動いている）
 #   docker compose --profile voicevox up -d                  # ttshub + VOICEVOX
 #   docker compose --profile ebyroid up -d                   # ttshub + ebyroid（VOICEROID の用意が必要）
+#   docker compose --profile openjtalk up -d                 # ttshub + Open JTalk（軽いので Raspberry Pi でも動く）
 #
 # 設定は ttshub.yaml（ttshub.example.yaml をコピーして作る）
 # 新しい版にするときは docker compose pull && docker compose up -d
@@ -47,6 +48,21 @@ services:
   voicevox:
     image: voicevox/voicevox_engine:cpu-latest
     profiles: [voicevox]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Open JTalk のサーバー（このリポジトリの openjtalk/）。ttshub.yaml では http://openjtalk:8791 を指す
+  # 声（Mei、Takumi、nitech-jp-atr503-m001）はイメージに入っている
+  openjtalk:
+    image: ${TTSHUB_OPENJTALK_IMAGE:-ghcr.io/ebycow/ttshub-openjtalk:latest}
+    build:
+      context: .
+      dockerfile: openjtalk/Dockerfile
+    profiles: [openjtalk]
     restart: unless-stopped
     logging:
       driver: json-file
