@@ -91,7 +91,8 @@ default                                             利用者ごと、または�
 
 | 項目 | 内容 |
 |---|---|
-| `default_voice` | 全体のデフォルト話者 |
+| `default_voice` | 全体のデフォルト話者。声を指定しなかったときの声で、代わりの声の候補にもなる |
+| `fallback_voice` | 最後の代わりの声。ほかの候補（要求した声、`equivalents`、エンジン・利用者・全体のデフォルト）がすべて使えないときに試す。普段の声とは別に、止まりにくいエンジン（同じマシンで動かす軽いエンジンなど）の声を置く。課金のあるエンジンの声は、`allow_billable_fallback` の利用者にしか使わない |
 | `engines.<名前>.plugin` | プラグインの種類 |
 | `engines.<名前>.backends` | エンジンの URL。複数書くと振り分ける |
 | `engines.<名前>.balance` | `round_robin`（既定）/ `least_connections` / `primary_backup` |

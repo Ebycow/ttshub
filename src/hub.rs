@@ -206,6 +206,7 @@ impl Hub {
     }
 
     /// 試す順の話者。要求した話者 → 同じキャラの別エンジン → エンジンのデフォルト → 利用者のデフォルト → 全体のデフォルト
+    /// → 最後の代わりの声
     fn candidates(&self, req: &Requested, client: Option<&ClientCtx>, fallback: bool) -> Vec<Voice> {
         let mut list: Vec<Voice> = req.voice.iter().cloned().collect();
         if !fallback {
@@ -237,6 +238,9 @@ impl Hub {
             list.extend(self.voice_of(d, client));
         }
         list.extend(self.voice_of(&self.config.default_voice, client));
+        if let Some(f) = &self.config.fallback_voice {
+            list.extend(self.voice_of(f, client));
+        }
 
         let allow_billable = client.is_some_and(|c| c.allow_billable_fallback);
         let mut seen = std::collections::HashSet::new();
@@ -684,6 +688,42 @@ presets:
             vec!["voicevox:東北きりたん/ノーマル", "ebyroid:kiritan", "voicevox:ずんだもん/ノーマル"]
         );
         assert_eq!(addresses(&h.candidates(&req, None, false)), vec!["voicevox:東北きりたん/ノーマル"]);
+    }
+
+    #[test]
+    fn fallback_voice_is_tried_last_and_is_not_the_default() {
+        let h = hub(&YAML.replace(
+            "default_voice: ebyroid:kiritan",
+            "default_voice: ebyroid:kiritan\nfallback_voice: voicevox:四国めたん",
+        ));
+        assert_eq!(h.expand("default", None).unwrap().voice.unwrap().address, "ebyroid:kiritan");
+        let req = h.expand("voicevox:東北きりたん", None).unwrap();
+        assert_eq!(
+            addresses(&h.candidates(&req, None, true)),
+            vec![
+                "voicevox:東北きりたん/ノーマル",
+                "ebyroid:kiritan",
+                "voicevox:ずんだもん/ノーマル",
+                "voicevox:四国めたん/ノーマル"
+            ]
+        );
+        // 要求した声が最後の代わりの声と同じなら、重ねて試さない
+        let req = h.expand("voicevox:四国めたん", None).unwrap();
+        assert_eq!(
+            addresses(&h.candidates(&req, None, true)),
+            vec!["voicevox:四国めたん/ノーマル", "voicevox:ずんだもん/ノーマル", "ebyroid:kiritan"]
+        );
+        assert_eq!(addresses(&h.candidates(&req, None, false)), vec!["voicevox:四国めたん/ノーマル"]);
+    }
+
+    #[test]
+    fn billable_fallback_voice_is_skipped_unless_allowed() {
+        let h = hub(&YAML
+            .replace("default_voice: ebyroid:kiritan", "default_voice: ebyroid:kiritan\nfallback_voice: cloud:alloy"));
+        let req = h.expand("voicevox:四国めたん", None).unwrap();
+        assert!(!addresses(&h.candidates(&req, None, true)).contains(&"cloud:alloy/default"));
+        let c = ClientCtx { name: "x".into(), default_voice: None, allow_billable_fallback: true };
+        assert_eq!(addresses(&h.candidates(&req, Some(&c), true)).last(), Some(&"cloud:alloy/default"));
     }
 
     #[test]

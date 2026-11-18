@@ -4,6 +4,10 @@
 # 全体のデフォルト話者
 default_voice: voicevox:ずんだもん
 
+# 最後の代わりの声。ほかの候補がすべて使えないときに試す（声を指定しなかったときの声は default_voice）
+# 普段の声とは別に、止まりにくいエンジン（同じマシンで動かす軽いエンジンなど）の声を置く
+# fallback_voice: <エンジン>:<キャラ>[/<スタイル>]
+
 engines:
   # compose の voicevox プロファイルで動かす VOICEVOX
   voicevox:
