@@ -100,6 +100,15 @@ fn spawn_background(hub: Arc<Hub>) {
             }
         });
     }
+    // 合成で話者が消えていたと分かったエンジンは、定期の更新を待たずに取り直す
+    let h = hub.clone();
+    tokio::spawn(async move {
+        loop {
+            h.wait_stale().await;
+            h.refresh_stale().await;
+            tokio::time::sleep(hub::STALE_REFRESH_MIN_INTERVAL).await;
+        }
+    });
     tokio::spawn(async move {
         let period = Duration::from_secs(hub.config.timeouts.catalog_refresh_secs);
         let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);

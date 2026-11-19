@@ -223,6 +223,10 @@ impl Engine {
                     tracing::warn!(backend = %b.url, error = %m, elapsed_ms = elapsed_ms(), "エンジンが要求を受け付けなかった");
                     return Err(EngineError::Rejected(m));
                 }
+                Err(EngineError::UnknownVoice(m)) => {
+                    tracing::warn!(backend = %b.url, error = %m, elapsed_ms = elapsed_ms(), "エンジンがその話者を持っていない");
+                    return Err(EngineError::UnknownVoice(m));
+                }
                 Err(e) => {
                     tracing::warn!(backend = %b.url, error = %e, elapsed_ms = elapsed_ms(), "バックエンドで合成に失敗");
                     b.mark_fail(&e.to_string());
