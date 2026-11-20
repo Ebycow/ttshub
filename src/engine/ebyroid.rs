@@ -60,6 +60,10 @@ impl EnginePlugin for Ebyroid {
             .json(&serde_json::json!({ "text": text, "name": voice.internal_id }))
             .send()
             .await?;
+        // 設定にない話者には 404 を返す（古い ebyroid は 500 を返すので、故障と区別できない）
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(EngineError::UnknownVoice(format!("audiostream: {} がない", voice.internal_id)));
+        }
         if !resp.status().is_success() {
             return Err(status_error(resp.status(), "audiostream"));
         }

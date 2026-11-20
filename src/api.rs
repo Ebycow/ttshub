@@ -712,4 +712,85 @@ presets:
         assert_eq!(admin("client-secret").await.unwrap().status(), 401);
         assert_eq!(admin("admin-secret").await.unwrap().status(), 200);
     }
+
+    // ---- 偽の ebyroid: エンジンの設定から話者が消えたのに、カタログが古いまま ----
+
+    /// ebyroid が持っている話者。合成では、ここにない話者に 404 を返す
+    struct FakeEbyroid {
+        voices: Mutex<Vec<&'static str>>,
+    }
+
+    async fn start_fake_ebyroid(state: Arc<FakeEbyroid>) -> String {
+        let router = Router::new()
+            .route("/api/v1/health", get(|| async { Json(json!({ "status": "ok" })) }))
+            .route(
+                "/api/v1/voices",
+                get(|State(s): State<Arc<FakeEbyroid>>| async move {
+                    let voices: Vec<Value> =
+                        s.voices.lock().unwrap().iter().map(|n| json!({ "name": n, "default": *n == "aoi" })).collect();
+                    Json(json!({ "default": "aoi", "voices": voices }))
+                }),
+            )
+            .route(
+                "/api/v2/audiostream",
+                post(|State(s): State<Arc<FakeEbyroid>>, Json(b): Json<Value>| async move {
+                    let name = b["name"].as_str().unwrap_or("aoi").to_owned();
+                    if !s.voices.lock().unwrap().iter().any(|v| *v == name) {
+                        let error = json!({ "error": format!("unknown voice: {name}") });
+                        return (StatusCode::NOT_FOUND, Json(error)).into_response();
+                    }
+                    let headers = [
+                        ("ebyroid-pcm-sample-rate", "22050"),
+                        ("ebyroid-pcm-bit-depth", "16"),
+                        ("ebyroid-pcm-number-of-channels", "1"),
+                    ];
+                    (headers, vec![0u8; 22050 / 10 * 2]).into_response()
+                }),
+            )
+            .with_state(state);
+        serve(router).await
+    }
+
+    #[tokio::test]
+    async fn voice_removed_from_the_engine_is_unknown_and_keeps_the_engine_available() {
+        let engine = Arc::new(FakeEbyroid { voices: Mutex::new(vec!["aoi", "akane"]) });
+        let eby = start_fake_ebyroid(engine.clone()).await;
+        let state_dir = std::env::temp_dir().join(format!("ttshub-test-{}", reqlog::new_id()));
+        let yaml = format!(
+            "default_voice: eby:aoi\nstate_dir: {}\nengines:\n  eby: {{ plugin: ebyroid, backends: [\"{eby}\"] }}\n",
+            state_dir.display()
+        );
+        let hub = Arc::new(Hub::new(serde_yaml::from_str(&yaml).unwrap()).unwrap());
+        hub.refresh_catalog("eby").await.unwrap();
+        let base = serve(router(hub.clone())).await;
+        let http = reqwest::Client::new();
+        let speech = |body: Value| http.post(format!("{base}/v1/speech")).json(&body).send();
+
+        // ebyroid の設定から akane を消した（ttshub のカタログにはまだ残っている）
+        engine.voices.lock().unwrap().retain(|v| *v != "akane");
+
+        // 代わりの声を使わないなら 404。何度要求しても ebyroid は切り離さない（以前は 5xx 扱いで 2 回目に切り離していた）
+        for _ in 0..3 {
+            let resp = speech(json!({ "text": "あ", "voice": "eby:akane", "fallback": "none" })).await.unwrap();
+            assert_eq!(resp.status(), 404);
+            let j: Value = resp.json().await.unwrap();
+            assert_eq!(j["error"]["code"], "unknown_voice");
+            // 消えた話者そのものは候補に出さない
+            assert!(!j["error"]["suggestions"].to_string().contains("eby:akane"), "{j}");
+        }
+        assert!(hub.engines["eby"].is_available());
+
+        // 代わりの声を使うなら、同じエンジンのデフォルトで読み、理由は unknown_voice
+        let resp = speech(json!({ "text": "あ", "voice": "eby:akane" })).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(header_str(&resp, "x-tts-fallback"), "unknown_voice");
+        assert_eq!(header_str(&resp, "x-tts-resolved-voice"), ext_value("eby:aoi"));
+
+        // 消えた話者はカタログを取り直して一覧から外す（本番では main の裏のタスクが refresh_stale を呼ぶ）
+        assert!(hub.catalog.lookup("eby", "akane").is_some());
+        tokio::time::timeout(Duration::from_secs(1), hub.wait_stale()).await.expect("取り直しを頼んでいない");
+        hub.refresh_stale().await;
+        assert!(hub.catalog.lookup("eby", "akane").is_none());
+        assert!(hub.catalog.lookup("eby", "aoi").is_some());
+    }
 }

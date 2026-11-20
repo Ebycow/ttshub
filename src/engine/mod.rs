@@ -78,6 +78,10 @@ pub enum EngineError {
     /// エンジンが要求を受け付けなかった（4xx など）
     #[error("rejected: {0}")]
     Rejected(String),
+    /// エンジンがその話者を持っていない（エンジンの設定から消えたのに、カタログが古いまま）。
+    /// エンジンの故障ではないので、バックエンドを切り離さず、同じエンジンの別の声も試せる
+    #[error("unknown voice: {0}")]
+    UnknownVoice(String),
 }
 
 impl From<reqwest::Error> for EngineError {

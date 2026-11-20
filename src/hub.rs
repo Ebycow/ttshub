@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
@@ -16,6 +16,10 @@ use crate::router::Engine;
 
 /// 別名・プリセット・default をたどる上限（循環の防止）
 const MAX_EXPANSION: usize = 8;
+
+/// 話者が消えたと分かったエンジンのカタログを取り直す最短の間隔。
+/// 話者一覧には載っているのに合成では無いと言うエンジンでも、取り直しを繰り返さない
+pub const STALE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct ClientCtx {
@@ -81,6 +85,9 @@ pub struct Hub {
     admin_key: Option<String>,
     /// エンジン → キャラ（slug）→ エンジンが申告したクレジット。調べ終えたキャラだけを持つ
     credits: RwLock<HashMap<String, HashMap<String, Credit>>>,
+    /// 合成で話者が無いと言われ、カタログを取り直すべきエンジン
+    stale: Mutex<HashSet<String>>,
+    stale_notify: tokio::sync::Notify,
 }
 
 impl Hub {
@@ -117,7 +124,17 @@ impl Hub {
         }
         let admin_key = config.admin_key_env.as_ref().and_then(|k| std::env::var(k).ok()).filter(|k| !k.is_empty());
         let order = config.engines.keys().cloned().collect();
-        Ok(Self { config, engines, catalog: Catalog::default(), order, clients, admin_key, credits: RwLock::default() })
+        Ok(Self {
+            config,
+            engines,
+            catalog: Catalog::default(),
+            order,
+            clients,
+            admin_key,
+            credits: RwLock::default(),
+            stale: Mutex::default(),
+            stale_notify: tokio::sync::Notify::new(),
+        })
     }
 
     /// 鍵から利用者を特定する。利用者を設定していなければ誰でも使える（Ok(None)）
@@ -281,6 +298,10 @@ impl Hub {
         // 時間切れや接続できないなどで失敗したエンジン。声が見つからないときの代わり（エンジンのデフォルト）とは違い、
         // 同じエンジンの別の声を試しても間に合わないので飛ばす
         let mut down: HashSet<&str> = HashSet::new();
+        // 要求した話者を、エンジンが持っていなかった（カタログが古い）
+        let mut requested_gone = false;
+        // 要求した話者のほかに、合成を試した候補があるか
+        let mut tried_others = false;
         for (i, v) in cands.iter().enumerate() {
             if down.contains(v.engine.as_str()) {
                 continue;
@@ -297,6 +318,9 @@ impl Hub {
                 continue;
             }
             let engine = &self.engines[&v.engine];
+            if i > 0 {
+                tried_others = true;
+            }
             match engine.synthesize(&v.entry, text, &params, &self.config.timeouts, until).await {
                 Ok((body, backend, switched)) => {
                     let reason = match (i, req.voice.is_some()) {
@@ -304,19 +328,39 @@ impl Hub {
                         (0, true) => FallbackReason::None,
                         (_, false) if engine_down => FallbackReason::EngineUnavailable,
                         (_, false) => FallbackReason::UnknownVoice,
+                        _ if requested_gone => FallbackReason::UnknownVoice,
                         _ => FallbackReason::EngineUnavailable,
                     };
                     let gain = unsupported(engine, &params, &mut warnings);
                     return Ok(SpeechOutcome { body, voice: v.clone(), reason, warnings, gain, backend });
                 }
                 Err(e) => {
-                    if matches!(e, EngineError::Unavailable(_)) {
-                        down.insert(v.engine.as_str());
+                    match e {
+                        EngineError::Unavailable(_) => {
+                            down.insert(v.engine.as_str());
+                        }
+                        EngineError::UnknownVoice(_) => {
+                            requested_gone |= i == 0 && req.voice.is_some();
+                            self.mark_catalog_stale(&v.engine);
+                        }
+                        EngineError::Rejected(_) => {}
                     }
                     tracing::warn!(voice = %v.address, error = %e, "合成に失敗。次の候補を試す");
                     last = format!("{}: {e}", v.address);
                 }
             }
+        }
+        // 要求した話者が無く、代わりの声も試していない（fallback: none など）なら、知らない話者として返す
+        if requested_gone && !tried_others {
+            let gone = &cands[0].address;
+            let suggestions = self
+                .catalog
+                .resolve(&self.order, &req.label, &self.named_targets())
+                .suggestions
+                .into_iter()
+                .filter(|s| s != gone)
+                .collect();
+            return Err(HubError::UnknownVoice { name: req.label, suggestions });
         }
         Err(HubError::Unavailable(last))
     }
@@ -355,6 +399,29 @@ impl Hub {
             tracing::warn!(engine = %name, error = %e, "カタログを保存できない");
         }
         Ok(n)
+    }
+
+    /// エンジンのカタログを、裏で取り直すよう頼む（`refresh_stale`）
+    fn mark_catalog_stale(&self, engine: &str) {
+        if self.stale.lock().unwrap().insert(engine.to_owned()) {
+            self.stale_notify.notify_one();
+        }
+    }
+
+    /// カタログを取り直すよう頼まれるまで待つ
+    pub async fn wait_stale(&self) {
+        self.stale_notify.notified().await;
+    }
+
+    /// 取り直すよう頼まれたエンジンのカタログを取り直す
+    pub async fn refresh_stale(&self) {
+        let names: Vec<String> = std::mem::take(&mut *self.stale.lock().unwrap()).into_iter().collect();
+        for name in names {
+            match self.refresh_catalog(&name).await {
+                Ok(n) => tracing::info!(engine = %name, voices = n, "話者が消えていたため、カタログを取り直した"),
+                Err(e) => tracing::warn!(engine = %name, error = %e, "カタログを取り直せない。前回の一覧を使い続ける"),
+            }
+        }
     }
 
     pub async fn refresh_all(&self) {
