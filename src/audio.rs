@@ -248,8 +248,8 @@ impl Stage {
         for f in buf[..whole].chunks_exact(frame) {
             let s = |i: usize| i16::from_le_bytes([f[i * 2], f[i * 2 + 1]]) as f32 / 32768.0;
             if self.channels == in_ch {
-                for ch in 0..in_ch {
-                    self.input[ch].push(s(ch));
+                for (ch, input) in self.input.iter_mut().enumerate().take(in_ch) {
+                    input.push(s(ch));
                 }
             } else {
                 // 出力がモノラルなら入力を混ぜる
