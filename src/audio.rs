@@ -4,7 +4,8 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::StreamExt;
-use rubato::{FftFixedIn, Resampler};
+use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+use rubato::{Fft, FixedSync, Indexing, Resampler, WindowFunction};
 use serde::Deserialize;
 
 use crate::engine::{AudioBody, ByteStream, PcmFormat};
@@ -138,7 +139,7 @@ struct Stage {
     channels: usize,
     carry: Vec<u8>,
     input: Vec<Vec<f32>>,
-    resampler: Option<FftFixedIn<f32>>,
+    resampler: Option<Fft<f32>>,
     /// リサンプラの遅延ぶん、出力の先頭を捨てる
     skip: usize,
     in_frames: u64,
@@ -150,8 +151,17 @@ impl Stage {
     fn new(in_fmt: PcmFormat, out: OutputFormat) -> Self {
         let channels = in_fmt.channels.min(out.channels).max(1) as usize;
         let resampler = (in_fmt.sample_rate != out.sample_rate).then(|| {
-            FftFixedIn::new(in_fmt.sample_rate as usize, out.sample_rate as usize, RESAMPLE_CHUNK, 2, channels)
-                .expect("リサンプラを作れる")
+            // rubato 0.15 の FftFixedIn と同じ設定（sub_chunks を自動にすると FFT が小さくなり、遮断特性が変わる）
+            Fft::new_custom(
+                in_fmt.sample_rate as usize,
+                out.sample_rate as usize,
+                RESAMPLE_CHUNK,
+                2,
+                channels,
+                WindowFunction::BlackmanHarris2,
+                FixedSync::Input,
+            )
+            .expect("リサンプラを作れる")
         });
         let skip = resampler.as_ref().map(|r| r.output_delay()).unwrap_or(0);
         Self {
@@ -183,9 +193,7 @@ impl Stage {
             if self.input[0].len() - consumed < need {
                 break;
             }
-            let chunk: Vec<&[f32]> = self.input.iter().map(|c| &c[consumed..consumed + need]).collect();
-            let res = rs.process(chunk.as_slice(), None).expect("チャンクの長さは合っている");
-            append(&mut out, res);
+            append(&mut out, resample(rs, &self.input, Indexing::new().input_offset(consumed)));
             consumed += need;
         }
         for c in &mut self.input {
@@ -201,15 +209,17 @@ impl Stage {
         };
         let rest = std::mem::replace(&mut self.input, vec![Vec::new(); self.channels]);
         if !rest[0].is_empty() {
-            append(&mut out, rs.process_partial(Some(rest.as_slice()), None).expect("長さは上限以下"));
+            let len = rest[0].len();
+            append(&mut out, resample(rs, &rest, Indexing::new().partial_len(len)));
         }
         // 遅延ぶん残っている出力を押し出す
+        let empty = vec![Vec::new(); self.channels];
         let expected = self.in_frames * self.out_rate as u64 / self.in_fmt.sample_rate as u64;
         for _ in 0..4 {
             if self.out_frames + (out[0].len().saturating_sub(self.skip)) as u64 >= expected {
                 break;
             }
-            append(&mut out, rs.process_partial::<Vec<f32>>(None, None).expect("空の入力"));
+            append(&mut out, resample(rs, &empty, Indexing::new().partial_len(0)));
         }
         let mut out = self.take_output(out);
         let over = self.out_frames.saturating_sub(expected) as usize;
@@ -260,6 +270,20 @@ impl Stage {
         self.in_frames += (whole / frame) as u64;
         self.carry = buf[whole..].to_vec();
     }
+}
+
+/// 1 チャンクぶんリサンプルする。入力が足りないぶん（partial_len）は無音で埋められる
+fn resample(rs: &mut Fft<f32>, input: &[Vec<f32>], indexing: Indexing) -> Vec<Vec<f32>> {
+    let channels = input.len();
+    let input = SequentialSliceOfVecs::new(input, channels, input[0].len()).expect("チャンネルの長さはそろっている");
+    let frames = rs.output_frames_next();
+    let mut out = vec![vec![0.0; frames]; channels];
+    let mut buf = SequentialSliceOfVecs::new_mut(&mut out, channels, frames).expect("出力の大きさは足りている");
+    let (_, written) = rs.process_into_buffer(&input, &mut buf, Some(&indexing)).expect("チャンクの長さは合っている");
+    for c in &mut out {
+        c.truncate(written);
+    }
+    out
 }
 
 fn append(out: &mut [Vec<f32>], res: Vec<Vec<f32>>) {
